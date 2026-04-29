@@ -30,6 +30,9 @@ CatalyticIQ demonstrates an end-to-end discovery loop for **CO2 + green H2 -> me
 - Candidate generation and export:
   - `generated_mol_*.csv`
   - `generated_stats_*.txt`
+- Interactive dashboard:
+  - `app.py`
+  - `docs/assets/dashboard-*.png`
 
 ### Prepared as roadmap for pilot extension
 
@@ -94,6 +97,33 @@ XDG_CACHE_HOME="/Users/deveshi/catalyst_gen/.cache" \
   --correction enabled \
   --from_around_mol enabled
 ```
+
+### 6) Launch the dashboard
+
+```bash
+streamlit run app.py
+```
+
+The dashboard reads existing artifacts from `dataset/co2_methanol/output_*` and shows:
+
+- Candidate shortlist with score-based ranking and CSV export.
+- Generation quality metrics (validity, uniqueness, novelty, FCD, SNN, InDiv).
+- Element frequency distribution of generated catalyst candidates.
+- Training trend charts parsed from `report.txt` and `loss.txt`.
+
+## Dashboard Preview
+
+Overview and shortlist view:
+
+![CatalyticIQ dashboard overview](docs/assets/dashboard-overview.png)
+
+Training trend panels:
+
+![CatalyticIQ dashboard training trends](docs/assets/dashboard-training-trends.png)
+
+Generation metrics and element-frequency panels:
+
+![CatalyticIQ dashboard metrics and frequency](docs/assets/dashboard-metrics-frequency.png)
 
 ## Recommended Training Timelines
 
