@@ -1,39 +1,45 @@
 # CatalyticIQ
 
-CatalyticIQ is an AI platform prototype for **Theme 4: AI Platform for Molecular Discovery in Chemical Catalysis and Synthetic Biology**.
+CatalyticIQ is an AI research platform for **Theme 4: AI Platform for Molecular Discovery in Chemical Catalysis and Synthetic Biology**.
 
-It supports an end-to-end discovery workflow:
+It is designed for GPS Renewables-style workflows where researchers must rapidly discover and optimize catalysts and biological pathways for sustainable fuel production.
 
-1. Researcher enters a target reaction.
-2. Platform uses structured catalyst datasets and trained models.
-3. Generative module proposes candidate catalyst designs.
-4. Predictive models rank candidates.
-5. Results are exported for lab testing.
-6. Experimental outcomes are fed back for retraining.
+## Hackathon Submission Snapshot
 
-## Theme 4 Alignment
+CatalyticIQ demonstrates an end-to-end discovery loop for **CO2 + green H2 -> methanol**:
 
-This repository is designed around the hackathon requirements:
+1. Ingest and normalize scientific catalyst datasets.
+2. Fine-tune a reaction-conditioned generative + predictive model.
+3. Generate novel candidate catalyst designs.
+4. Rank candidates by predicted performance signals.
+5. Export candidate lists for lab testing.
+6. Feed outcomes back for retraining in subsequent rounds.
 
-- **Chemical catalysis direction:** CO2 + green H2 -> methanol workflow implemented.
-- **Generative + predictive loop:** candidate generation plus ranking.
-- **Feedback loop readiness:** dataset update and retraining path included.
-- **Pilot readiness:** architecture and data model are designed to extend to syngas->ethanol and ethanol->hydrocarbons in a longer GPS Renewables pilot.
+## What This Repository Covers
 
-## Current Scope (Hackathon MVP)
+### Implemented in this prototype
 
-- Focus reaction family: **CO2 hydrogenation to methanol**.
-- Public data sources integrated:
-  - TheMeCat
-  - Suvarna methanol catalysis dataset
-- Main artifacts:
-  - merged training data in `dataset/co2_methanol.csv`
-  - fine-tuned model checkpoints under `dataset/co2_methanol/output_*`
-  - generated candidate list under `generated_mol_*.csv`
+- CO2->methanol data pipeline using:
+  - `dataset/raw/TheMeCat_v1.csv`
+  - `dataset/raw/Suvarna_2022.xlsx`
+- Merged training dataset:
+  - `dataset/co2_methanol.csv`
+  - `dataset/co2_methanol_scaled.csv`
+- Fine-tuning and training outputs:
+  - `dataset/co2_methanol/output_*`
+- Candidate generation and export:
+  - `generated_mol_*.csv`
+  - `generated_stats_*.txt`
 
-## Environment Setup
+### Prepared as roadmap for pilot extension
 
-### Apple Silicon (M1/M2/M3)
+- Syngas->ethanol and ethanol->hydrocarbons reaction families.
+- Synthetic biology direction (enzyme/pathway design).
+- Multi-user collaboration and lab system integration.
+
+## Quick Start
+
+### 1) Environment (Apple Silicon)
 
 ```bash
 conda env create -f catalyticiq-osx-arm64.yml
@@ -42,23 +48,7 @@ python -m pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spl
 python -m pip install torch-geometric==2.5.2
 ```
 
-If `conda activate` fails in a fresh shell:
-
-```bash
-source /opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh
-conda init zsh
-```
-
-## Dataset Preparation
-
-### 1) Download raw files
-
-Expected locations:
-
-- `dataset/raw/TheMeCat_v1.csv`
-- `dataset/raw/Suvarna_2022.xlsx`
-
-### 2) Build merged CatalyticIQ dataset
+### 2) Build the merged CO2 methanol dataset
 
 ```bash
 python3 scripts/prepare_co2_methanol_dataset.py \
@@ -67,7 +57,7 @@ python3 scripts/prepare_co2_methanol_dataset.py \
   --output "dataset/co2_methanol.csv"
 ```
 
-### 3) Optional target scaling for demo-readable ranking
+### 3) Scale target for demo-friendly ranking (recommended)
 
 ```bash
 python3 - <<'PY'
@@ -78,10 +68,7 @@ df.to_csv("dataset/co2_methanol_scaled.csv", index=False)
 PY
 ```
 
-## Fine-tuning
-
-Use pretrained ORD checkpoint in:
-`dataset/ord/output_0_ord_pretrained_aug5`
+### 4) Fine-tune
 
 ```bash
 MPLCONFIGDIR="/Users/deveshi/catalyst_gen/.cache/matplotlib" \
@@ -95,10 +82,7 @@ XDG_CACHE_HOME="/Users/deveshi/catalyst_gen/.cache" \
   --class_weight enabled
 ```
 
-Output goes to:
-`dataset/co2_methanol/output_<seed>_<timestamp>`
-
-## Generation
+### 5) Generate candidates
 
 ```bash
 MPLCONFIGDIR="/Users/deveshi/catalyst_gen/.cache/matplotlib" \
@@ -111,22 +95,16 @@ XDG_CACHE_HOME="/Users/deveshi/catalyst_gen/.cache" \
   --from_around_mol enabled
 ```
 
-Generated files:
+## Recommended Training Timelines
 
-- `generated_mol_*.csv`
-- `generated_stats_*.txt`
+### Fast demo iteration (1-3 hours)
 
-## Demo Checklist
+- 1 to 5 epochs to validate pipeline and produce sample outputs.
 
-- Enter target reaction (CO2 + H2 -> methanol).
-- Show ranked candidate list from generated outputs.
-- Export shortlist for hypothetical lab validation.
-- Show retraining path with newly appended results.
+### Strong hackathon run (6-12 hours)
 
-## Longer-Term Pilot Path (GPS Renewables)
+- 20 to 30 epochs with periodic monitoring of `report.txt` and `loss.txt`.
 
-- Add syngas->ethanol and ethanol->hydrocarbons datasets.
-- Add constrained generation for inorganic catalyst components.
-- Add lab-result ingestion API with provenance/versioning.
-- Add collaboration, role-based review, and experiment attribution.
-- Integrate simulation and process-economic screening modules.
+### Extended quality run (overnight, 12+ hours)
+
+- 40+ epochs plus candidate post-filtering and reranking for stronger shortlist quality.
