@@ -34,6 +34,14 @@ REQUIRED_COLUMNS = [
     "catalyst_primary_loading_wt",
 ]
 
+# Optional property columns surfaced into the *_full.csv but not into the
+# legacy schema consumed by the existing CVAE training pipeline.
+OPTIONAL_PROPERTY_COLUMNS = [
+    "selectivity_meoh_pct",
+    "co2_conversion_pct",
+    "yield_meoh_pct",
+]
+
 
 THEMECAT_COLUMNS = {
     "active_1": "active_comp_1",
@@ -49,6 +57,9 @@ THEMECAT_COLUMNS = {
     "h2_co2_ratio": "pH2_pCO2_ratio",
     "ghsv": "GHSV_nlph_gcat",
     "sty": "STY_g_per_gcath",
+    "selectivity_meoh": "selectivity_CH3OH",
+    "co2_conversion": "CO2_conversion",
+    "yield_meoh": "yield_CH3OH",
 }
 
 SUVARNA_COLUMNS = {
@@ -167,6 +178,16 @@ def build_themecat_frame(df: pd.DataFrame, allowed_elements: set[str]) -> pd.Dat
     out["time_h"] = 1.0
     out["ghsv_h-1"] = pd.to_numeric(df[THEMECAT_COLUMNS["ghsv"]], errors="coerce")
     out["h2_co2_ratio"] = pd.to_numeric(df[THEMECAT_COLUMNS["h2_co2_ratio"]], errors="coerce")
+    # Optional performance properties.
+    out["selectivity_meoh_pct"] = pd.to_numeric(
+        df[THEMECAT_COLUMNS["selectivity_meoh"]], errors="coerce"
+    )
+    out["co2_conversion_pct"] = pd.to_numeric(
+        df[THEMECAT_COLUMNS["co2_conversion"]], errors="coerce"
+    )
+    out["yield_meoh_pct"] = pd.to_numeric(
+        df[THEMECAT_COLUMNS["yield_meoh"]], errors="coerce"
+    )
     out["source_dataset"] = "themecat"
     return out
 
@@ -203,11 +224,16 @@ def build_suvarna_frame(df: pd.DataFrame, allowed_elements: set[str]) -> pd.Data
     out["time_h"] = 1.0
     out["ghsv_h-1"] = pd.to_numeric(df[SUVARNA_COLUMNS["ghsv"]], errors="coerce")
     out["h2_co2_ratio"] = pd.to_numeric(df[SUVARNA_COLUMNS["h2_co2_ratio"]], errors="coerce")
+    # Suvarna ships only STY; selectivity / conversion / yield are not present.
+    out["selectivity_meoh_pct"] = np.nan
+    out["co2_conversion_pct"] = np.nan
+    out["yield_meoh_pct"] = np.nan
     out["source_dataset"] = "suvarna"
     return out
 
 
-def finalize(df: pd.DataFrame) -> pd.DataFrame:
+def _finalize_common(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply filtering + numeric coercion shared by both schemas."""
     df = df.copy()
     df = df[np.isfinite(df["methanol_sty"])]
     df = df[df["methanol_sty"] >= 0]
@@ -220,7 +246,28 @@ def finalize(df: pd.DataFrame) -> pd.DataFrame:
     df["catalyst_components_count"] = safe_numeric(df["catalyst_components_count"], fallback=2.0)
     df["catalyst_primary_loading_wt"] = safe_numeric(df["catalyst_primary_loading_wt"], fallback=50.0)
 
-    return df[REQUIRED_COLUMNS + ["source_dataset"]].reset_index(drop=True)
+    for col in OPTIONAL_PROPERTY_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df.reset_index(drop=True)
+
+
+def finalize(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the legacy schema used by the existing CVAE training pipeline."""
+    common = _finalize_common(df)
+    return common[REQUIRED_COLUMNS + ["source_dataset"]].reset_index(drop=True)
+
+
+def finalize_full(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the extended schema including selectivity / conversion / yield.
+
+    NaN is preserved on the optional columns so downstream property heads can
+    mask out rows that lack the relevant target. The legacy CVAE pipeline must
+    keep using `finalize()` — this richer file is for the property heads only.
+    """
+    common = _finalize_common(df)
+    return common[REQUIRED_COLUMNS + OPTIONAL_PROPERTY_COLUMNS + ["source_dataset"]].reset_index(drop=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -241,7 +288,13 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=Path("dataset/co2_methanol.csv"),
-        help="Output CatalyticIQ-ready CSV path.",
+        help="Output CatalyticIQ-ready CSV path (legacy schema).",
+    )
+    parser.add_argument(
+        "--full-output",
+        type=Path,
+        default=None,
+        help="Output path for the extended schema with selectivity/conversion/yield. Defaults to <output>_full.csv.",
     )
     return parser.parse_args()
 
@@ -269,14 +322,23 @@ def main() -> None:
         ignore_index=True,
     )
     final_df = finalize(merged)
+    full_df = finalize_full(merged)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     final_df.to_csv(args.output, index=False)
+    full_path = args.output.with_name(args.output.stem + "_full.csv") if args.full_output is None else args.full_output
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_df.to_csv(full_path, index=False)
 
     print(f"Wrote {len(final_df)} rows -> {args.output}")
-    print("Columns:", list(final_df.columns))
+    print(f"Wrote {len(full_df)} rows -> {full_path} (with selectivity/conversion/yield)")
+    print("Columns (full):", list(full_df.columns))
     print("Source counts:")
     print(final_df["source_dataset"].value_counts().to_string())
+    coverage = (
+        full_df[OPTIONAL_PROPERTY_COLUMNS].notna().mean() * 100.0
+    ).round(2).to_dict()
+    print("Optional column coverage (%):", coverage)
 
 
 if __name__ == "__main__":

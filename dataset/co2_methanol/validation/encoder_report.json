@@ -1,0 +1,33 @@
+{
+  "held_out": {
+    "n_test": 196,
+    "r2": 0.7550530826474298,
+    "mae": 0.10066592693328857,
+    "residual_sigma": 0.15253478288650513,
+    "coverage_90pct": 0.9336734693877551
+  },
+  "latent_neighbours": {
+    "k": 5,
+    "mean_jaccard": 0.9236754270053346,
+    "median_jaccard": 1.0
+  },
+  "top_decile_coherence": {
+    "n_top_decile": 195,
+    "mean_top_share": 0.48307692307692307
+  },
+  "pareto": {
+    "n_samples": 1000,
+    "cvae_mean": 0.2535608410835266,
+    "cvae_p95": 0.44941141903400417,
+    "random_mean": 0.17331373691558838,
+    "random_p95": 0.41002196073532104,
+    "ga_mean": 0.6887748837471008,
+    "ga_p95": 1.7570591032505032
+  },
+  "active_learning": {
+    "n_target": 20,
+    "topk_window": 50,
+    "recovered_in_top50": 8,
+    "recovery_share": 0.4
+  }
+}

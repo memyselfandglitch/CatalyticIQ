@@ -18,6 +18,9 @@ env/
 .cache/
 .pytest_cache/
 
+# Phase 4/6 service state (DuckDB caches; regenerable from code seeds)
+cache/
+
 # Notebook checkpoints
 .ipynb_checkpoints/
 
@@ -34,8 +37,14 @@ dataset/*/generated_*.csv
 dataset/*/generated_*.txt
 dataset/*/optimize_smiles_*/
 
+# Property-head training artifacts (large / regenerable)
+dataset/*/property_heads/embeddings.npz
+dataset/*/property_heads/*.pth.bak
+dataset/*/property_heads/head_*_v_feedback.pth
+
 # Keep curated source CSVs committed if desired
 !dataset/co2_methanol.csv
+!dataset/co2_methanol_full.csv
 !dataset/co2_methanol_scaled.csv
 !dataset/ord.csv
 !dataset/sm_test1.csv
