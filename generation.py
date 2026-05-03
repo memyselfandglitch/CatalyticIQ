@@ -307,7 +307,11 @@ if __name__ == '__main__':
     dictionary = get_fingerprint_dictionary(smiles_list+training_smiles)
     m_internal_diversity = internal_diversity(smiles_list, dictionary=dictionary)
     m_similarity_to_nearest_neighbor = similarity_to_nearest_neighbor(smiles_list, training_smiles, dictionary=dictionary)
-    m_frechet_distance = frechet_distance(smiles_list, training_smiles)
+    try:
+        m_frechet_distance = frechet_distance(smiles_list, training_smiles)
+    except Exception as e:
+        print("(FCD) ERROR!", e)
+        m_frechet_distance = float("nan")
     print('InDiv:', m_internal_diversity)
     print('SNN:', m_similarity_to_nearest_neighbor)
     print('FCD:', m_frechet_distance)

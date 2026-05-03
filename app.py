@@ -78,6 +78,16 @@ def load_clean_candidates(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     df["predicted_sty_g_h_gcat"] = pd.to_numeric(df["predicted_sty_g_h_gcat"], errors="coerce")
     df["raw_score"] = pd.to_numeric(df["raw_score"], errors="coerce")
+    if "validation_score" in df.columns:
+        df["validation_score"] = pd.to_numeric(df["validation_score"], errors="coerce")
+    for col in (
+        "passes_validation_gate",
+        "is_novel_composition",
+        "has_known_support",
+        "has_known_promoter",
+    ):
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.lower().isin({"true", "1", "yes"})
     if "n_components" in df.columns:
         df["n_components"] = pd.to_numeric(df["n_components"], errors="coerce").fillna(0).astype(int)
     return df
@@ -512,12 +522,16 @@ with tab_discover:
         display_cols = [
             "composition_view",
             "predicted_sty_g_h_gcat",
+            "validation_tier",
+            "validation_score",
             "selectivity_proxy_pct",
             "stability_proxy",
             "pseudo_smiles",
         ]
         if "n_components" in clean_df.columns:
             display_cols.append("n_components")
+        if "matched_methanol_family" in clean_df.columns:
+            display_cols.append("matched_methanol_family")
         st.dataframe(clean_df[display_cols], use_container_width=True)
 
         st.markdown("**Top candidate 2D depictions**")

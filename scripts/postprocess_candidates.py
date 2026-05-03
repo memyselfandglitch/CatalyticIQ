@@ -27,7 +27,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -62,6 +62,22 @@ SUPPORT_TO_OXIDE: dict[str, str] = {
 # Known promoters in CO2 hydrogenation literature. Kept verbatim in the display.
 KNOWN_PROMOTERS: set[str] = {"K", "Cs", "Na", "Ba", "Ca", "Li", "Rb"}
 
+# High-confidence families for CO2 hydrogenation / methanol synthesis. These are
+# not a substitute for simulation; they are a gate that keeps demo shortlists
+# close to chemistry a reviewer would recognise.
+METHANOL_FAMILY_RULES: tuple[tuple[set[str], str], ...] = (
+    ({"Cu", "Zn"}, "Cu/Zn methanol-synthesis family"),
+    ({"Cu", "Zr"}, "Cu/ZrO2 methanol-synthesis family"),
+    ({"Cu", "Al"}, "Cu/Al2O3 methanol-synthesis family"),
+    ({"Cu", "Ce"}, "Cu/CeO2 methanol-synthesis family"),
+    ({"Cu", "Ti"}, "Cu/TiO2 methanol-synthesis family"),
+    ({"Pd", "Zn"}, "Pd/ZnO methanol-synthesis family"),
+    ({"Pt", "Zn"}, "Pt/ZnO hydrogenation family"),
+    ({"Ni", "Ti"}, "Ni/TiO2 hydrogenation family"),
+    ({"Rh", "Zr"}, "Rh/ZrO2 hydrogenation family"),
+    ({"Ru", "Zr"}, "Ru/ZrO2 hydrogenation family"),
+)
+
 # Tokens we never want to surface to a chemist — these are tokenisation
 # artefacts (atomic hydrogen as standalone "ligand", non-metal carbons and
 # nitrogens, hydride placeholders) rather than real catalyst components.
@@ -93,6 +109,8 @@ def clean_token(tok: str) -> str | None:
         return None
     sym = m.group(1)
     if sym in BLOCKED_TOKENS:
+        return None
+    if sym not in ACTIVE_METALS and sym not in SUPPORT_TO_OXIDE and sym not in KNOWN_PROMOTERS:
         return None
     return sym
 
@@ -128,6 +146,153 @@ def composition_view(components: Iterable[str]) -> str:
 
 def has_active_metal(components: Iterable[str]) -> bool:
     return any(c in ACTIVE_METALS for c in components)
+
+
+def component_signature(components: Sequence[str]) -> str:
+    """Stable composition signature used for exact novelty checks."""
+    return "|".join(sorted(set(components)))
+
+
+def load_training_signatures(training_csv: Path | None) -> dict[str, set[str]]:
+    """Return known catalyst signatures from the training corpus.
+
+    Values are stored as component sets so we can compute nearest-neighbour
+    Jaccard similarity without pulling in heavyweight materials packages.
+    """
+    if training_csv is None or not training_csv.exists():
+        return {}
+    df = pd.read_csv(training_csv)
+    if "catalyst" not in df.columns:
+        return {}
+
+    known: dict[str, set[str]] = {}
+    for catalyst in df["catalyst"].dropna().astype(str):
+        _pseudo, comps = deduplicate_components(catalyst)
+        if not comps:
+            continue
+        sig = component_signature(comps)
+        known[sig] = set(comps)
+    return known
+
+
+def nearest_training_family(
+    components: Sequence[str],
+    training_signatures: dict[str, set[str]],
+) -> tuple[float, str]:
+    """Find closest training composition by Jaccard similarity."""
+    cand = set(components)
+    if not cand or not training_signatures:
+        return 0.0, ""
+
+    best_sim = 0.0
+    best_sig = ""
+    for sig, known in training_signatures.items():
+        union = cand | known
+        if not union:
+            continue
+        sim = len(cand & known) / len(union)
+        if sim > best_sim:
+            best_sim = sim
+            best_sig = sig
+    return float(best_sim), best_sig
+
+
+def matched_methanol_family(components: Sequence[str]) -> str:
+    comp_set = set(components)
+    for required, label in METHANOL_FAMILY_RULES:
+        if required.issubset(comp_set):
+            return label
+    return ""
+
+
+def validate_candidate(
+    components: Sequence[str],
+    training_signatures: dict[str, set[str]],
+) -> dict[str, object]:
+    """Score whether a generated composition is worth ranking/exporting.
+
+    This is intentionally conservative and explainable: it checks for an active
+    metal, credible support/promoter context, closeness to the known catalyst
+    manifold, and a recognised CO2-to-methanol family. Later pilot versions can
+    add SMACT/pymatgen/COMSOL outputs as extra terms.
+    """
+    comp_set = set(components)
+    n_components = len(comp_set)
+    active = sorted(comp_set & ACTIVE_METALS)
+    supports = sorted(comp_set & set(SUPPORT_TO_OXIDE))
+    promoters = sorted(comp_set & KNOWN_PROMOTERS)
+    family = matched_methanol_family(components)
+    nearest_sim, nearest_sig = nearest_training_family(components, training_signatures)
+    exact_seen = component_signature(components) in training_signatures
+
+    score = 0.0
+    reasons: list[str] = []
+
+    if active:
+        score += 35.0
+        reasons.append("active metal present")
+    else:
+        reasons.append("no active metal")
+
+    if supports:
+        score += 15.0
+        reasons.append("known oxide support")
+    elif active:
+        score += 6.0
+        reasons.append("unsupported active-metal composition")
+
+    if promoters and (active or supports):
+        score += 5.0
+        reasons.append("known promoter")
+    elif promoters:
+        score -= 15.0
+        reasons.append("promoter without catalytic metal/support")
+
+    if 2 <= n_components <= 4:
+        score += 10.0
+        reasons.append("tractable component count")
+    elif n_components == 1:
+        score += 4.0
+        reasons.append("single-component baseline")
+    else:
+        score -= 10.0
+        reasons.append("too many components")
+
+    score += 15.0 * nearest_sim
+    if nearest_sig:
+        reasons.append(f"nearest known family {nearest_sig} ({nearest_sim:.2f})")
+
+    if family:
+        score += 20.0
+        reasons.append(family)
+
+    if exact_seen:
+        reasons.append("seen composition")
+    else:
+        reasons.append("novel composition")
+
+    score = float(max(0.0, min(100.0, score)))
+    if score >= 80:
+        tier = "A"
+    elif score >= 65:
+        tier = "B"
+    elif score >= 50:
+        tier = "C"
+    else:
+        tier = "Reject"
+
+    return {
+        "validation_score": score,
+        "validation_tier": tier,
+        "passes_validation_gate": tier != "Reject",
+        "known_family_similarity": nearest_sim,
+        "nearest_known_family": nearest_sig,
+        "is_novel_composition": not exact_seen,
+        "has_known_support": bool(supports),
+        "has_known_promoter": bool(promoters),
+        "matched_methanol_family": family,
+        "validation_reasons": "; ".join(reasons),
+    }
 
 
 def calibrate_scores(scores: np.ndarray, training_sty: np.ndarray) -> np.ndarray:
@@ -326,6 +491,7 @@ def postprocess(
     training_csv: Path | None,
     output_csv: Path,
     require_active_metal: bool = True,
+    min_validation_score: float = 65.0,
     *,
     use_activity_head: bool = False,
     cvae_run_dir: Path | None = None,
@@ -356,6 +522,29 @@ def postprocess(
     df = df[df["pseudo_smiles"].str.len() > 0].copy()
     if require_active_metal:
         df = df[df["has_active_metal"]].copy()
+
+    training_signatures = load_training_signatures(training_csv)
+    validation_rows = [
+        validate_candidate(components, training_signatures)
+        for components in df["components"].tolist()
+    ]
+    if validation_rows:
+        df = pd.concat([df.reset_index(drop=True), pd.DataFrame(validation_rows)], axis=1)
+    else:
+        for col in (
+            "validation_score",
+            "validation_tier",
+            "passes_validation_gate",
+            "known_family_similarity",
+            "nearest_known_family",
+            "is_novel_composition",
+            "has_known_support",
+            "has_known_promoter",
+            "matched_methanol_family",
+            "validation_reasons",
+        ):
+            df[col] = []
+    df = df[df["validation_score"] >= min_validation_score].copy()
 
     if use_activity_head:
         if cvae_run_dir is None or activity_head_path is None:
@@ -392,6 +581,16 @@ def postprocess(
         "raw_score",
         "n_components",
         "has_active_metal",
+        "validation_score",
+        "validation_tier",
+        "passes_validation_gate",
+        "known_family_similarity",
+        "nearest_known_family",
+        "is_novel_composition",
+        "has_known_support",
+        "has_known_promoter",
+        "matched_methanol_family",
+        "validation_reasons",
     ]
     if use_activity_head and "activity_head_sty" in df.columns:
         cols.insert(4, "activity_head_sty")
@@ -423,6 +622,12 @@ def parse_args() -> argparse.Namespace:
         "--allow-non-metal",
         action="store_true",
         help="Keep candidates without an active-metal component (off by default).",
+    )
+    parser.add_argument(
+        "--min-validation-score",
+        type=float,
+        default=65.0,
+        help="Minimum catalyst validation score to export. Default keeps tiers A/B and drops weak baselines.",
     )
     parser.add_argument(
         "--use-activity-head",
@@ -464,6 +669,7 @@ def main() -> None:
         training_csv=args.training,
         output_csv=output,
         require_active_metal=not args.allow_non_metal,
+        min_validation_score=args.min_validation_score,
         use_activity_head=args.use_activity_head,
         cvae_run_dir=args.cvae_run_dir,
         dataset_file=args.dataset_file,
@@ -471,7 +677,13 @@ def main() -> None:
     )
     print(f"Wrote {len(df)} cleaned candidates -> {output}")
     if not df.empty:
-        show = ["composition_view", "predicted_sty_g_h_gcat", "raw_score"]
+        show = [
+            "composition_view",
+            "predicted_sty_g_h_gcat",
+            "validation_score",
+            "validation_tier",
+            "raw_score",
+        ]
         if args.use_activity_head and "activity_head_sty" in df.columns:
             show.insert(2, "activity_head_sty")
         head = df.head(5)[show]

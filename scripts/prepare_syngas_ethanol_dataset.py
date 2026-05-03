@@ -6,7 +6,7 @@ Map an external syngas→ethanol corpus into CatalyticIQ CSVs:
 **Example sources:** Zenodo ``11639494`` (Suvarna et al., FeCoCuZr HAS / modelling
 xlsx files), PNNL higher-alcohol work (often PDF — digitise or use paper SI).
 
-Expected input columns (rename your source headers to match, or pass ``--rename-json``):
+Expected simple input columns (rename your source headers to match, or pass ``--rename-json``):
 
   * ``catalyst`` — composition text or pseudo-SMILES token string
   * ``ethanol_sty`` — space-time yield in g EtOH / h / g_cat (adjust with --sty_scale if mg-scale)
@@ -14,6 +14,14 @@ Expected input columns (rename your source headers to match, or pass ``--rename-
   * ``time_h`` — dummy time column for the loader (default 1.0 if missing)
   * ``h2_co_ratio`` — optional; defaults to 2.0
   * ``ghsv_h-1`` — optional; defaults to median or 1000
+
+The script also understands the Zenodo 11639494 workbook
+``Full_catalytic_performance_data.xlsx`` from Suvarna et al. It derives
+``ethanol_sty`` from measured higher-alcohol productivity:
+
+    ethanol_sty = STYHA[mg h-1 gcat-1] * HA_C2_selectivity / 1000
+
+where HA_C2 is the ethanol fraction inside the higher-alcohol selectivity block.
 
 Gas-phase SMILES defaults (modifiable with CLI flags):
   CO + H2 → ethanol, matching the graph pipeline used for CO2→methanol.
@@ -24,7 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 import numpy as np
 import pandas as pd
@@ -87,10 +95,168 @@ def _read_table(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _read_workbook(path: Path) -> dict[str, pd.DataFrame]:
+    return pd.read_excel(path, sheet_name=None, header=None)
+
+
 def _require_columns(df: pd.DataFrame, cols: List[str]) -> None:
     missing = [c for c in cols if c not in df.columns]
     if missing:
         raise SystemExit(f"[fatal] input missing columns {missing}. Have: {list(df.columns)}")
+
+
+def _find_block(row0: pd.Series, row1: pd.Series, group: str, labels: list[str]) -> dict[str, int]:
+    """Find a grouped block in the two-row Zenodo workbook header."""
+    matches = [i for i, v in row0.items() if str(v).strip() == group]
+    for start in reversed(matches):
+        out: dict[str, int] = {}
+        for offset in range(0, len(labels) + 8):
+            idx = start + offset
+            if idx >= len(row1):
+                break
+            label = str(row1.iloc[idx]).strip()
+            if label in labels and label not in out:
+                out[label] = idx
+        if all(label in out for label in labels):
+            return out
+    raise ValueError(f"could not find block {group!r} with labels {labels}")
+
+
+def _find_group_label(row0: pd.Series, row1: pd.Series, group: str, label: str) -> int:
+    """Find a column whose first header row is group and second row is label."""
+    for i in range(len(row0)):
+        if str(row0.iloc[i]).strip() == group and str(row1.iloc[i]).strip() == label:
+            return i
+    raise ValueError(f"could not find grouped column {group!r}/{label!r}")
+
+
+def _to_float(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def composition_to_pseudo_smiles(comp: dict[str, float], slots: int = 20) -> str:
+    """Encode approximate composition by repeated element tokens.
+
+    The original CVAE only sees pseudo-SMILES tokens, not separate numeric
+    composition columns. Repeating tokens keeps Fe65Co19Cu5Zr11 distinct from
+    Fe20Co20Cu50Zr10 while staying compatible with the existing graph pipeline.
+    """
+    finite = {k: v for k, v in comp.items() if np.isfinite(v) and v > 0}
+    if not finite:
+        return ""
+    total = sum(finite.values())
+    if total <= 0:
+        return ""
+
+    toks: list[str] = []
+    for element in ("Fe", "Co", "Cu", "Zr"):
+        frac = finite.get(element, 0.0) / total
+        if frac <= 0:
+            continue
+        n = max(1, int(round(frac * slots)))
+        toks.extend([f"[{element}]"] * n)
+    return ".".join(toks)
+
+
+def build_zenodo_has_frame(sheets: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Build a syngas->ethanol frame from Zenodo 11639494 HAS workbook."""
+    rows: list[dict[str, object]] = []
+    for sheet_name, sheet in sheets.items():
+        if sheet.shape[0] < 3:
+            continue
+        row0 = sheet.iloc[0]
+        row1 = sheet.iloc[1]
+        try:
+            comp_cols = _find_block(row0, row1, "Actual composition (XRF)", ["Zr", "Cu", "Co", "Fe"])
+            cond_cols = _find_block(
+                row0,
+                row1,
+                "Actual reaction conditions",
+                ["T [°C]", "H2/CO", "GHSV [cm3/(h*gcat)]"],
+            )
+            activity_cols = _find_block(
+                row0,
+                row1,
+                "Measured activity",
+                ["STYHA [mg/(h*gcat)]", "XCO"],
+            )
+            selectivity_cols = _find_block(
+                row0,
+                row1,
+                "Measured selectivity",
+                ["CO2", "CH4", "MeOH", "HA"],
+            )
+            styha_col = activity_cols["STYHA [mg/(h*gcat)]"]
+            xco_col = activity_cols["XCO"]
+            co2_sel_col = selectivity_cols["CO2"]
+            ch4_sel_col = selectivity_cols["CH4"]
+            meoh_sel_col = selectivity_cols["MeOH"]
+            ha_sel_col = selectivity_cols["HA"]
+            ethanol_ha_col = _find_group_label(row0, row1, "HA", "C2")
+        except ValueError:
+            continue
+
+        for local_i in range(2, len(sheet)):
+            rec = sheet.iloc[local_i]
+            styha_mg = _to_float(rec.iloc[styha_col])
+            ethanol_frac_in_ha = _to_float(rec.iloc[ethanol_ha_col])
+            t_c = _to_float(rec.iloc[cond_cols["T [°C]"]])
+            pressure_bar = 50.0
+            h2_co = _to_float(rec.iloc[cond_cols["H2/CO"]])
+            ghsv = _to_float(rec.iloc[cond_cols["GHSV [cm3/(h*gcat)]"]])
+            comp = {
+                "Zr": _to_float(rec.iloc[comp_cols["Zr"]]),
+                "Cu": _to_float(rec.iloc[comp_cols["Cu"]]),
+                "Co": _to_float(rec.iloc[comp_cols["Co"]]),
+                "Fe": _to_float(rec.iloc[comp_cols["Fe"]]),
+            }
+            catalyst = composition_to_pseudo_smiles(comp)
+            if not catalyst or not np.isfinite(styha_mg) or not np.isfinite(ethanol_frac_in_ha):
+                continue
+            if not np.isfinite(t_c):
+                continue
+
+            nonzero_components = sum(1 for v in comp.values() if np.isfinite(v) and v > 0)
+            primary_loading = max([v for v in comp.values() if np.isfinite(v)] or [0.0]) * 100.0
+            rows.append(
+                {
+                    "index": f"{sheet_name}-{int(_to_float(rec.iloc[1])) if np.isfinite(_to_float(rec.iloc[1])) else local_i}",
+                    "reactant": "[C-]#[O+]",
+                    "reagent": "[H][H]",
+                    "product": "CCO",
+                    "catalyst": catalyst,
+                    "ethanol_sty": styha_mg * ethanol_frac_in_ha / 1000.0,
+                    "time_h": 1.0,
+                    "temperature_c": t_c,
+                    "pressure_bar": pressure_bar,
+                    "h2_co_ratio": h2_co if np.isfinite(h2_co) else 2.0,
+                    "ghsv_h-1": ghsv if np.isfinite(ghsv) else 1000.0,
+                    "catalyst_components_count": nonzero_components,
+                    "catalyst_primary_loading_wt": primary_loading,
+                    "source_dataset": "zenodo_11639494_" + sheet_name.replace(" ", "_").lower(),
+                    "styha_g_h_gcat": styha_mg / 1000.0,
+                    "ha_c2_fraction": ethanol_frac_in_ha,
+                    "co_conversion": _to_float(rec.iloc[xco_col]),
+                    "selectivity_co2": _to_float(rec.iloc[co2_sel_col]),
+                    "selectivity_ch4": _to_float(rec.iloc[ch4_sel_col]),
+                    "selectivity_meoh": _to_float(rec.iloc[meoh_sel_col]),
+                    "selectivity_ha": _to_float(rec.iloc[ha_sel_col]),
+                    "xrf_zr": comp["Zr"],
+                    "xrf_cu": comp["Cu"],
+                    "xrf_co": comp["Co"],
+                    "xrf_fe": comp["Fe"],
+                }
+            )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        raise SystemExit("[fatal] could not parse Zenodo HAS workbook into training rows")
+    out = out[np.isfinite(out["ethanol_sty"])]
+    out = out[out["ethanol_sty"] >= 0]
+    return out.reset_index(drop=True)
 
 
 def build_frame(df: pd.DataFrame, sty_scale: float, r_sm: str, rg_sm: str, p_sm: str) -> pd.DataFrame:
@@ -146,8 +312,18 @@ def build_frame(df: pd.DataFrame, sty_scale: float, r_sm: str, rg_sm: str, p_sm:
 
 def main() -> None:
     cli = parse_args()
-    raw = _read_table(cli.input)
-    if cli.rename_json is not None:
+    raw: pd.DataFrame | None = None
+    if cli.input.suffix.lower() in {".xlsx", ".xls"}:
+        workbook = _read_workbook(cli.input)
+        first_header = pd.read_excel(cli.input, nrows=1)
+        if {"catalyst", "ethanol_sty"}.issubset(first_header.columns):
+            raw = _read_table(cli.input)
+        else:
+            built = build_zenodo_has_frame(workbook)
+    else:
+        raw = _read_table(cli.input)
+
+    if raw is not None and cli.rename_json is not None:
         mapping = json.loads(cli.rename_json.read_text(encoding="utf-8"))
         if not isinstance(mapping, dict):
             raise SystemExit("[fatal] --rename-json must be a JSON object of strings to strings")
@@ -155,13 +331,15 @@ def main() -> None:
         raw = raw.rename(
             columns={str(k): str(v) for k, v in mapping.items() if k not in skip}
         )
-    built = build_frame(
-        raw,
-        sty_scale=cli.sty_scale,
-        r_sm=cli.reactant_smiles,
-        rg_sm=cli.reagent_smiles,
-        p_sm=cli.product_smiles,
-    )
+
+    if raw is not None:
+        built = build_frame(
+            raw,
+            sty_scale=cli.sty_scale,
+            r_sm=cli.reactant_smiles,
+            rg_sm=cli.reagent_smiles,
+            p_sm=cli.product_smiles,
+        )
 
     for c in REQUIRED_OUT:
         if c not in built.columns:
@@ -173,7 +351,7 @@ def main() -> None:
 
     full_path = out_path.parent / (out_path.stem + "_full.csv")
     full = built.copy()
-    if "selectivity_etoh_pct" in raw.columns:
+    if raw is not None and "selectivity_etoh_pct" in raw.columns:
         r = raw.copy()
         r["index"] = r.get("index", pd.Series(np.arange(len(r)))).astype(str)
         sel = r[["index", "selectivity_etoh_pct"]].drop_duplicates("index")
