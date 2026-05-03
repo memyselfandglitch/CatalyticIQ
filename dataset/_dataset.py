@@ -99,6 +99,25 @@ dataset_args['co2_methanol'] = {
     },
 }
 
+# Syngas → ethanol (Stage B). Same condition_dim as co2_methanol for ORD-init
+# fine-tunes. Build rows with `scripts/prepare_syngas_ethanol_dataset.py`.
+dataset_args['syngas_ethanol'] = {
+    'file': 'syngas_ethanol',
+    'smiles': {'reactant': 'reactant',
+               'reagent': 'reagent',
+               'product': 'product',
+               'catalyst': 'catalyst'},
+    'task': 'ethanol_sty',
+    'ids': 'index',
+    'splitting': None,
+    'predictiontask': 'others',
+    'predictiontype': 'regression',
+    'time': 'temperature_c',
+    'condition_dict': {
+        'pressure_bar': {'type': 'continuous', 'list': [5, 10, 20, 30, 50, 80]},
+    },
+}
+
 
 
 

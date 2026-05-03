@@ -12,6 +12,11 @@ Transforms:
   percentiles against the training distribution. This avoids displaying
   un-interpretable negative numbers while staying honest about the calibration.
 
+Optional ``--use-activity-head``: embed each candidate through the frozen CVAE,
+run ``ActivityHead`` on μ (same ranking signal as ``validate_encoder``), sort
+by that value, and write ``predicted_sty_g_h_gcat`` as the head output in
+physical units (NN score remains in ``raw_score``).
+
 The cleaned candidates are written to `generated_candidates_clean.csv` next to
 the source CSV. The input file is never modified.
 """
@@ -20,11 +25,15 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 
 # Active metals seen in CO2->methanol catalysis literature. Anything outside this
@@ -155,7 +164,13 @@ def load_training_sty(training_csv: Path | None) -> np.ndarray:
         return np.array([])
     df = pd.read_csv(training_csv)
     col = None
-    for cand in ("methanol_sty", "methanol_sty_scaled", "STY", "sty"):
+    for cand in (
+        "methanol_sty",
+        "methanol_sty_scaled",
+        "ethanol_sty",
+        "STY",
+        "sty",
+    ):
         if cand in df.columns:
             col = cand
             break
@@ -164,11 +179,158 @@ def load_training_sty(training_csv: Path | None) -> np.ndarray:
     return pd.to_numeric(df[col], errors="coerce").dropna().to_numpy()
 
 
+def _reaction_smiles(dataset_file: str) -> tuple[str, str, str]:
+    if dataset_file == "co2_methanol":
+        from catcvae.feedback_embed import (
+            CO2_METHANOL_PRODUCT,
+            CO2_METHANOL_REACTANT,
+            CO2_METHANOL_REAGENT,
+        )
+
+        return CO2_METHANOL_REACTANT, CO2_METHANOL_REAGENT, CO2_METHANOL_PRODUCT
+    if dataset_file == "syngas_ethanol":
+        return "[C-]#[O+]", "[H][H]", "CCO"
+    raise ValueError(f"unknown --dataset-file {dataset_file!r}")
+
+
+def _median_temperature_pressure(training_csv: Path | None) -> tuple[float, float]:
+    t_c, p_bar = 240.0, 50.0
+    if training_csv is None or not training_csv.exists():
+        return t_c, p_bar
+    df = pd.read_csv(training_csv)
+    if "temperature_c" in df.columns:
+        t_c = float(pd.to_numeric(df["temperature_c"], errors="coerce").median())
+    if "pressure_bar" in df.columns:
+        p_bar = float(pd.to_numeric(df["pressure_bar"], errors="coerce").median())
+    return t_c, p_bar
+
+
+def _parse_cvae_run_dir(run_dir: Path) -> tuple[int, str]:
+    m = re.match(r"output_(\d+)_(.+)$", run_dir.name)
+    if not m:
+        raise ValueError(f"expected folder name output_<seed>_<time>, got {run_dir.name!r}")
+    return int(m.group(1)), m.group(2)
+
+
+def _activity_head_scores(
+    pseudo_smiles: list[str],
+    training_csv: Path | None,
+    cvae_run_dir: Path,
+    dataset_file: str,
+    activity_head_path: Path,
+) -> np.ndarray:
+    """Embed each pseudo-SMILES through the frozen CVAE and run ``ActivityHead`` (μ only)."""
+    import torch
+
+    try:
+        from catcvae.ae import CVAE
+        from catcvae.dataset import getDataObject
+        from catcvae.latent import embed
+        from catcvae.property_heads import ActivityHead, HeadConfig
+        from catcvae.setup import ModelArgumentParser
+        from torch_geometric.loader import DataLoader as PyGLoader
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "Activity-head scoring requires the same stack as training (torch-geometric, rdkit, …). "
+            "Use your project conda env, e.g.\n"
+            "  conda run -n catdrx python scripts/postprocess_candidates.py ... --use-activity-head ...\n"
+            f"Original import error: {exc}"
+        ) from exc
+
+    seed, pretrained_time = _parse_cvae_run_dir(cvae_run_dir.resolve())
+    parser = ModelArgumentParser()
+    margs = parser.setArgument(
+        arguments=[
+            "--file",
+            dataset_file,
+            "--pretrained_file",
+            dataset_file,
+            "--pretrained_time",
+            pretrained_time,
+            "--seed",
+            str(seed),
+            "--epochs",
+            "0",
+            "--class_weight",
+            "disabled",
+        ]
+    )
+    xr, xg, xp = _reaction_smiles(dataset_file)
+    t_c, p_bar = _median_temperature_pressure(training_csv)
+    cond_key = list(margs.condition_dict.keys())[0]
+
+    out = np.full(len(pseudo_smiles), np.nan, dtype=np.float64)
+    graphs: list = []
+    idx_map: list[int] = []
+    for i, smi in enumerate(pseudo_smiles):
+        if not isinstance(smi, str) or not smi.strip():
+            continue
+        d = {
+            "X_reactant": xr,
+            "X_reagent": xg,
+            "X_product": xp,
+            "X_catalyst": smi,
+            "X_time": t_c,
+            "y": 0.0,
+            "ids": f"postprocess-{i}",
+            "C_" + cond_key: p_bar,
+        }
+        dobj = getDataObject(margs, d)
+        if dobj is None:
+            continue
+        graphs.append(dobj)
+        idx_map.append(i)
+    if not graphs:
+        return out
+
+    dev = margs.device
+    AE = CVAE(
+        embedding_setting=margs.embedding_setting,
+        encoding_setting=margs.encoding_setting,
+        decoding_setting=margs.decoding_setting,
+        emb_dim=margs.emb_dim,
+        emb_cond_dim=margs.emb_cond_dim,
+        cond_dim=margs.cond_dim,
+        device=dev,
+    ).to(dev)
+    ckpt = cvae_run_dir.resolve() / "model_ae.pth"
+    if not ckpt.is_file():
+        raise FileNotFoundError(f"missing CVAE weights: {ckpt}")
+    AE.load_state_dict(torch.load(ckpt, map_location=dev))
+    AE.eval()
+    loader = PyGLoader(
+        graphs,
+        batch_size=min(64, len(graphs)),
+        shuffle=False,
+        follow_batch=["x_reactant", "x_reagent", "x_product", "x_catalyst"],
+    )
+    _z, mu, *_rest = embed(loader, AE, None, device=dev)
+    mu_np = np.asarray(mu, dtype=np.float32)
+
+    if not activity_head_path.is_file():
+        raise FileNotFoundError(f"missing ActivityHead: {activity_head_path}")
+    cfg = HeadConfig(in_dim=mu_np.shape[1])
+    head = ActivityHead(cfg)
+    head.load_state_dict(torch.load(activity_head_path, map_location="cpu"))
+    head.eval()
+    with torch.no_grad():
+        pred = head(torch.tensor(mu_np, dtype=torch.float32)).numpy().reshape(-1)
+
+    for row_i, p in zip(idx_map, pred):
+        out[row_i] = float(p)
+    return out
+
+
 def postprocess(
     candidates_csv: Path,
     training_csv: Path | None,
     output_csv: Path,
     require_active_metal: bool = True,
+    *,
+    use_activity_head: bool = False,
+    cvae_run_dir: Path | None = None,
+    dataset_file: str = "co2_methanol",
+    activity_head_path: Path | None = None,
 ) -> pd.DataFrame:
     raw = pd.read_csv(candidates_csv, header=None, names=["candidate", "score"])
     raw["candidate"] = raw["candidate"].astype(str)
@@ -195,17 +357,33 @@ def postprocess(
     if require_active_metal:
         df = df[df["has_active_metal"]].copy()
 
-    df = (
-        df.sort_values("raw_score", ascending=False)
-          .drop_duplicates(subset=["pseudo_smiles"])
-          .reset_index(drop=True)
-    )
-
-    training_sty = load_training_sty(training_csv)
-    df["predicted_sty_g_h_gcat"] = calibrate_scores(
-        df["raw_score"].to_numpy(),
-        training_sty,
-    )
+    if use_activity_head:
+        if cvae_run_dir is None or activity_head_path is None:
+            raise ValueError("use_activity_head requires cvae_run_dir and activity_head_path")
+        df["activity_head_sty"] = _activity_head_scores(
+            df["pseudo_smiles"].tolist(),
+            training_csv,
+            cvae_run_dir,
+            dataset_file,
+            activity_head_path,
+        )
+        df = (
+            df.sort_values("activity_head_sty", ascending=False, na_position="last")
+            .drop_duplicates(subset=["pseudo_smiles"])
+            .reset_index(drop=True)
+        )
+        df["predicted_sty_g_h_gcat"] = df["activity_head_sty"].to_numpy(dtype=float)
+    else:
+        df = (
+            df.sort_values("raw_score", ascending=False)
+            .drop_duplicates(subset=["pseudo_smiles"])
+            .reset_index(drop=True)
+        )
+        training_sty = load_training_sty(training_csv)
+        df["predicted_sty_g_h_gcat"] = calibrate_scores(
+            df["raw_score"].to_numpy(),
+            training_sty,
+        )
 
     cols = [
         "pseudo_smiles",
@@ -215,6 +393,8 @@ def postprocess(
         "n_components",
         "has_active_metal",
     ]
+    if use_activity_head and "activity_head_sty" in df.columns:
+        cols.insert(4, "activity_head_sty")
     df = df[cols + ["components"]]
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -244,21 +424,57 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep candidates without an active-metal component (off by default).",
     )
+    parser.add_argument(
+        "--use-activity-head",
+        action="store_true",
+        help="Re-rank with frozen-CVAE μ + ActivityHead (same signal as validate_encoder); "
+        "STY column is the head output in physical units.",
+    )
+    parser.add_argument(
+        "--cvae-run-dir",
+        type=Path,
+        default=None,
+        help="e.g. dataset/co2_methanol/output_0_20260428_212044 (must contain model_ae.pth).",
+    )
+    parser.add_argument(
+        "--dataset-file",
+        type=str,
+        default="co2_methanol",
+        help="Dataset key for ModelArgumentParser (co2_methanol or syngas_ethanol).",
+    )
+    parser.add_argument(
+        "--activity-head-path",
+        type=Path,
+        default=None,
+        help="Default: dataset/<dataset-file>/property_heads/head_activity.pth",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.use_activity_head and args.cvae_run_dir is None:
+        raise SystemExit("--cvae-run-dir is required when using --use-activity-head")
     output = args.output or (args.candidates.parent / "generated_candidates_clean.csv")
+    head_path = args.activity_head_path
+    if args.use_activity_head and head_path is None:
+        head_path = ROOT / "dataset" / args.dataset_file / "property_heads" / "head_activity.pth"
     df = postprocess(
         candidates_csv=args.candidates,
         training_csv=args.training,
         output_csv=output,
         require_active_metal=not args.allow_non_metal,
+        use_activity_head=args.use_activity_head,
+        cvae_run_dir=args.cvae_run_dir,
+        dataset_file=args.dataset_file,
+        activity_head_path=head_path if args.use_activity_head else None,
     )
     print(f"Wrote {len(df)} cleaned candidates -> {output}")
     if not df.empty:
-        head = df.head(5)[["composition_view", "predicted_sty_g_h_gcat", "raw_score"]]
+        show = ["composition_view", "predicted_sty_g_h_gcat", "raw_score"]
+        if args.use_activity_head and "activity_head_sty" in df.columns:
+            show.insert(2, "activity_head_sty")
+        head = df.head(5)[show]
         print(head.to_string(index=False))
 
 

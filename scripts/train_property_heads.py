@@ -17,6 +17,7 @@ The script:
 
 Run:
     python scripts/train_property_heads.py --pretrained_time 20260428_212044
+    python scripts/train_property_heads.py --file syngas_ethanol --pretrained_time <ts>
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ from catcvae.property_heads import (  # noqa: E402
 )
 from catcvae.setup import ModelArgumentParser  # noqa: E402
 from catcvae.stability_descriptors import composition_stability_score  # noqa: E402
+from dataset import _dataset as dataset_registry  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,7 +72,11 @@ def parse_args() -> argparse.Namespace:
         help="Timestamp suffix of the run directory (e.g. 20260428_212044).",
     )
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--full_csv", default="dataset/co2_methanol_full.csv")
+    p.add_argument(
+        "--full_csv",
+        default=None,
+        help="Defaults to dataset/<file>_full.csv when omitted.",
+    )
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch_size", type=int, default=64)
@@ -78,8 +84,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument(
         "--output_dir",
-        default="dataset/co2_methanol/property_heads",
-        help="Directory for trained heads, embeddings cache and plots.",
+        default=None,
+        help="Defaults to dataset/<file>/property_heads when omitted.",
     )
     p.add_argument(
         "--rebuild_embeddings",
@@ -323,14 +329,20 @@ def evaluate_stability_head(merged: pd.DataFrame, output_dir: Path) -> dict[str,
 
 def main() -> None:
     cli = parse_args()
-    output_dir = ROOT / cli.output_dir
+    out_rel = cli.output_dir or str(ROOT / "dataset" / cli.file / "property_heads")
+    output_dir = ROOT / out_rel if not Path(out_rel).is_absolute() else Path(out_rel)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    full_csv = ROOT / cli.full_csv
+    full_rel = cli.full_csv or str(ROOT / "dataset" / f"{cli.file}_full.csv")
+    full_csv = ROOT / full_rel if not Path(full_rel).is_absolute() else Path(full_rel)
     if not full_csv.exists():
-        print(f"[fatal] full csv not found: {full_csv}. Run scripts/prepare_co2_methanol_dataset.py first.")
+        print(
+            f"[fatal] full csv not found: {full_csv}. "
+            f"Run scripts/prepare_{cli.file}_dataset.py (or co2 script) first."
+        )
         sys.exit(1)
     full_df = pd.read_csv(full_csv)
+    task_col = dataset_registry.dataset_args[cli.file]["task"]
 
     args = setup_cvae_args(cli.file, cli.pretrained_time, cli.seed)
     output_model_dir = ROOT / "dataset" / args.file / f"output_{cli.seed}_{cli.pretrained_time}"
@@ -348,14 +360,14 @@ def main() -> None:
 
     metrics: dict[str, dict[str, float]] = {}
 
-    activity_mask = merged["methanol_sty"].notna().to_numpy()
+    activity_mask = merged[task_col].notna().to_numpy()
     if activity_mask.sum() > 50:
         activity_head = ActivityHead(head_cfg)
         metrics["activity"] = train_regression_head(
             name="activity",
             head=activity_head,
             X=mu[activity_mask],
-            y=merged.loc[activity_mask, "methanol_sty"].to_numpy(dtype=np.float32),
+            y=merged.loc[activity_mask, task_col].to_numpy(dtype=np.float32),
             output_dir=output_dir,
             epochs=cli.epochs,
             lr=cli.lr,
@@ -365,7 +377,11 @@ def main() -> None:
     else:
         print("[skip] activity head: insufficient data.")
 
-    sel_mask = merged["selectivity_meoh_pct"].notna().to_numpy()
+    if "selectivity_meoh_pct" not in merged.columns:
+        print("[skip] selectivity head: column selectivity_meoh_pct not in full CSV.")
+        sel_mask = np.zeros(len(merged), dtype=bool)
+    else:
+        sel_mask = merged["selectivity_meoh_pct"].notna().to_numpy()
     if sel_mask.sum() > 50:
         sel_head = SelectivityHead(head_cfg)
         # The dataset only ships methanol selectivity (TheMeCat). We still

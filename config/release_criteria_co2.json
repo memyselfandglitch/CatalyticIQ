@@ -1,0 +1,12 @@
+{
+  "description": "Minimum metrics before tagging a CO2-to-methanol build as release-candidate.",
+  "property_heads": {
+    "activity_r2_min": 0.65,
+    "activity_mae_max": 0.15
+  },
+  "encoder_report": {
+    "held_out_r2_min": 0.65,
+    "held_out_coverage_90pct_min": 0.85,
+    "latent_neighbours_mean_jaccard_min": 0.7
+  }
+}

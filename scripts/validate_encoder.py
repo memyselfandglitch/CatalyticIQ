@@ -55,15 +55,29 @@ from catcvae.property_heads import ActivityHead, HeadConfig  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--full_csv", default="dataset/co2_methanol_full.csv")
-    p.add_argument("--embeddings", default="dataset/co2_methanol/property_heads/embeddings.npz")
-    p.add_argument("--head", default="dataset/co2_methanol/property_heads/head_activity.pth")
-    p.add_argument("--output_dir", default="dataset/co2_methanol/validation")
+    p.add_argument(
+        "--dataset",
+        default="co2_methanol",
+        help="Dataset key; default paths are under dataset/<dataset>/ when other args omitted.",
+    )
+    p.add_argument("--full_csv", default=None)
+    p.add_argument("--embeddings", default=None)
+    p.add_argument("--head", default=None)
+    p.add_argument("--output_dir", default=None)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--top_decile_neighbours", type=int, default=5)
     p.add_argument("--n_samples", type=int, default=1000)
     p.add_argument("--epochs", type=int, default=80)
-    return p.parse_args()
+    args = p.parse_args()
+    if args.full_csv is None:
+        args.full_csv = str(ROOT / f"dataset/{args.dataset}_full.csv")
+    if args.embeddings is None:
+        args.embeddings = str(ROOT / f"dataset/{args.dataset}/property_heads/embeddings.npz")
+    if args.head is None:
+        args.head = str(ROOT / f"dataset/{args.dataset}/property_heads/head_activity.pth")
+    if args.output_dir is None:
+        args.output_dir = str(ROOT / f"dataset/{args.dataset}/validation")
+    return args
 
 
 def parse_components(catalyst_smiles: str) -> set[str]:
@@ -252,12 +266,24 @@ def active_learning_recovery(
 
 def main() -> None:
     args = parse_args()
-    output_dir = ROOT / args.output_dir
+    output_dir = Path(args.output_dir)
+    if not output_dir.is_absolute():
+        output_dir = ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
 
-    full_df = pd.read_csv(ROOT / args.full_csv)
-    npz = np.load(ROOT / args.embeddings, allow_pickle=True)
+    full_csv = Path(args.full_csv) if not Path(args.full_csv).is_absolute() else Path(args.full_csv)
+    emb_npz = Path(args.embeddings) if not Path(args.embeddings).is_absolute() else Path(args.embeddings)
+    head_path = Path(args.head) if not Path(args.head).is_absolute() else Path(args.head)
+    if not full_csv.is_absolute():
+        full_csv = ROOT / full_csv
+    if not emb_npz.is_absolute():
+        emb_npz = ROOT / emb_npz
+    if not head_path.is_absolute():
+        head_path = ROOT / head_path
+
+    full_df = pd.read_csv(full_csv)
+    npz = np.load(emb_npz, allow_pickle=True)
     mu = npz["mu"]
     ids = np.array([str(x) for x in npz["ids"]])
     y = npz["y_true"].astype(np.float32)
@@ -269,7 +295,7 @@ def main() -> None:
 
     head_cfg = HeadConfig(in_dim=mu.shape[1])
     head = ActivityHead(head_cfg)
-    head.load_state_dict(torch.load(ROOT / args.head, map_location="cpu"))
+    head.load_state_dict(torch.load(head_path, map_location="cpu"))
 
     metrics = {}
     metrics["held_out"] = held_out_metrics(mu, y, head, rng)

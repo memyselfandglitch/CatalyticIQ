@@ -16,6 +16,7 @@ Public API:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from typing import Sequence
@@ -166,6 +167,12 @@ OFFLINE_MP_SEED: list[KnownEntry] = [
     ),
 ]
 
+# Offline demo entries for syngas → ethanol (same MP phases as a placeholder
+# until reaction-specific curation lands).
+OFFLINE_MP_SYNGAS_SEED: list[KnownEntry] = [
+    dataclasses.replace(e, reaction="syngas_to_ethanol") for e in OFFLINE_MP_SEED
+]
+
 
 def _live_fetch(reaction: str) -> list[KnownEntry] | None:
     """Live `mp-api` query. Returns None if the live API is unavailable."""
@@ -181,6 +188,10 @@ def _live_fetch(reaction: str) -> list[KnownEntry] | None:
     # We map a small set of reaction keys to composition queries.
     reaction_to_compositions = {
         "co2_to_methanol": [
+            ["Cu"], ["Zn", "O"], ["Al", "O"], ["Zr", "O"], ["In", "O"],
+            ["Ce", "O"], ["Pd"], ["Pt"], ["Ni"],
+        ],
+        "syngas_to_ethanol": [
             ["Cu"], ["Zn", "O"], ["Al", "O"], ["Zr", "O"], ["In", "O"],
             ["Ce", "O"], ["Pd"], ["Pt"], ["Ni"],
         ],
@@ -222,7 +233,9 @@ def _live_fetch(reaction: str) -> list[KnownEntry] | None:
 
 def seed_offline_cache(cache: RetrievalCache | None = None) -> int:
     cache = cache or RetrievalCache()
-    return cache.upsert_mp_entries(OFFLINE_MP_SEED)
+    n = cache.upsert_mp_entries(OFFLINE_MP_SEED)
+    n += cache.upsert_mp_entries(OFFLINE_MP_SYNGAS_SEED)
+    return n
 
 
 def fetch_known_catalysts(

@@ -1,0 +1,9 @@
+{
+  "_doc": "Edit keys to match your xlsx headers. You still need a catalyst pseudo-SMILES column (e.g. build [Fe].[Co].[Cu].[Zr] from at% in Excel).",
+  "MyCatalystColumn": "catalyst",
+  "STYHA_g_h_gcat": "ethanol_sty",
+  "Temperature_C": "temperature_c",
+  "Pressure_bar": "pressure_bar",
+  "GHSV_mL_g_h": "ghsv_h-1",
+  "H2_CO_ratio": "h2_co_ratio"
+}

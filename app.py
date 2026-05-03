@@ -12,10 +12,29 @@ import streamlit as st
 
 
 ROOT = Path(__file__).resolve().parent
-DATASET_DIR = ROOT / "dataset" / "co2_methanol"
-HYPER_RESULT_PATH = DATASET_DIR / "hyper_result.txt"
-PROPERTY_DIR = DATASET_DIR / "property_heads"
-VALIDATION_DIR = DATASET_DIR / "validation"
+
+
+def _relative_to_repo(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _clean_csv_uses_activity_head(clean: Path | None) -> bool:
+    if clean is None or not clean.is_file():
+        return False
+    try:
+        cols = pd.read_csv(clean, nrows=0).columns.tolist()
+    except Exception:
+        return False
+    return "activity_head_sty" in cols
+
+
+from services.reaction_registry import (  # noqa: E402
+    dataset_dir,
+    list_profiles_for_ui,
+)
 
 
 # =========================================================================
@@ -301,12 +320,31 @@ def selectivity_proxy(components: list[str]) -> float:
 # =========================================================================
 
 st.set_page_config(page_title="CatalyticIQ Dashboard", layout="wide")
-st.title("CatalyticIQ — CO2-to-Methanol Catalyst Discovery Loop")
-st.caption("Generative AI + multi-property prediction + reaction-energy estimation + lab feedback.")
+
+profiles = list_profiles_for_ui()
+if not profiles:
+    st.error("No reaction profiles with a dataset folder found. Add dataset/<name>/ and CVAE output_* runs.")
+    st.stop()
+profile_by_label = {p.label: p for p in profiles}
+reaction_label = st.sidebar.selectbox("Reaction", list(profile_by_label.keys()))
+profile = profile_by_label[reaction_label]
+DATASET_DIR = dataset_dir(profile)
+HYPER_RESULT_PATH = DATASET_DIR / "hyper_result.txt"
+PROPERTY_DIR = DATASET_DIR / "property_heads"
+VALIDATION_DIR = DATASET_DIR / "validation"
+
+st.title(f"CatalyticIQ — {profile.label}")
+simple_ui = st.sidebar.checkbox(
+    "Simple view",
+    value=True,
+    help="Fewer metrics, auto-pick latest stats file, and tuck charts / JSON / CLI into closed sections.",
+)
+if not simple_ui:
+    st.caption(profile.caption)
 
 runs = discover_output_runs(DATASET_DIR)
 if not runs:
-    st.error("No output runs found under dataset/co2_methanol.")
+    st.error(f"No output runs found under {DATASET_DIR}. Fine-tune the CVAE for this reaction first.")
     st.stop()
 
 run_map = {p.name: p for p in runs}
@@ -326,20 +364,52 @@ selected_gen_csv_path = selected_run / selected_gen_csv
 
 selected_stats_path = None
 if gen_stats_files:
-    selected_stats_name = st.sidebar.selectbox(
-        "Generation stats file", [p.name for p in gen_stats_files]
-    )
-    selected_stats_path = selected_run / selected_stats_name
+    if simple_ui:
+        selected_stats_path = gen_stats_files[0]
+        st.sidebar.caption(f"Stats file: `{gen_stats_files[0].name}`")
+    else:
+        selected_stats_name = st.sidebar.selectbox(
+            "Generation stats file", [p.name for p in gen_stats_files]
+        )
+        selected_stats_path = selected_run / selected_stats_name
 
 top_n = st.sidebar.slider("Top-N shortlist size", min_value=5, max_value=100, value=20, step=5)
 must_have_metal = st.sidebar.checkbox("Require metal-containing candidates", value=True)
 search_query = st.sidebar.text_input("Search candidate text")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(
-    "Use scripts/postprocess_candidates.py, train_property_heads.py, "
-    "validate_encoder.py and retrain_with_feedback.py to refresh the artifacts read here."
+if simple_ui:
+    st.sidebar.caption(f"Data: `dataset/{profile.dataset_subdir}/` · CLI under **Refresh shortlist**.")
+else:
+    st.sidebar.caption(
+        f"Artifacts: `dataset/{profile.dataset_subdir}/`. Refresh with postprocess_candidates, "
+        "train_property_heads, validate_encoder, and retrain_with_feedback.py "
+        f"(pass --file {profile.id} for feedback retrain)."
+    )
+
+_train_csv_rel = f"dataset/{profile.dataset_subdir}.csv"
+_gen_rel = _relative_to_repo(selected_gen_csv_path)
+_run_rel = _relative_to_repo(selected_run)
+_out_rel = f"{_run_rel}/generated_candidates_clean.csv"
+_pp_base = (
+    f"conda run -n catdrx python scripts/postprocess_candidates.py \\\n"
+    f"  --candidates {_gen_rel} \\\n"
+    f"  --training {_train_csv_rel} \\\n"
+    f"  --output {_out_rel}"
 )
+_pp_activity = (
+    f"conda run -n catdrx python scripts/postprocess_candidates.py \\\n"
+    f"  --candidates {_gen_rel} \\\n"
+    f"  --training {_train_csv_rel} \\\n"
+    f"  --dataset-file {profile.id} \\\n"
+    f"  --use-activity-head \\\n"
+    f"  --cvae-run-dir {_run_rel} \\\n"
+    f"  --output {_out_rel}"
+)
+with st.sidebar.expander("Refresh shortlist (`generated_candidates_clean.csv`)"):
+    st.caption("Run from repo root. First = NN rank calibration; second = ActivityHead (recommended).")
+    st.code(_pp_base, language="bash")
+    st.code(_pp_activity, language="bash")
 
 
 # =========================================================================
@@ -348,6 +418,7 @@ st.sidebar.caption(
 
 raw_candidates = load_candidate_csv(selected_gen_csv_path)
 clean_path = discover_clean_csv(selected_run)
+clean_ranked_by_activity_head = _clean_csv_uses_activity_head(clean_path)
 clean_df = load_clean_candidates(clean_path) if clean_path is not None else pd.DataFrame()
 if not clean_df.empty:
     if must_have_metal and "has_active_metal" in clean_df.columns:
@@ -393,17 +464,31 @@ tab_discover, tab_pathway, tab_compare, tab_kb, tab_validation, tab_feedback = s
 
 # ------------------------------------------------------------- DISCOVER
 with tab_discover:
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Generated", f"{len(raw_candidates):,}")
-    col2.metric("Unique", f"{raw_candidates['candidate'].nunique():,}")
-    col3.metric("Validity", f"{stats.get('Validity', 'N/A')}")
-    col4.metric("Novelty", f"{stats.get('Novelty', 'N/A')}")
-    if (PROPERTY_DIR / "metrics.json").exists():
-        m = json.loads((PROPERTY_DIR / "metrics.json").read_text(encoding="utf-8"))
-        r2 = m.get("activity", {}).get("r2")
-        col5.metric("Activity R^2", f"{r2:.3f}" if r2 is not None else "N/A")
+    if simple_ui:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Generated", f"{len(raw_candidates):,}")
+        c2.metric("Unique SMILES", f"{raw_candidates['candidate'].nunique():,}")
+        if (PROPERTY_DIR / "metrics.json").exists():
+            m = json.loads((PROPERTY_DIR / "metrics.json").read_text(encoding="utf-8"))
+            r2 = m.get("activity", {}).get("r2")
+            c3.metric("Activity head R² (lit.)", f"{r2:.3f}" if r2 is not None else "N/A")
+        else:
+            c3.metric("Activity head R²", "N/A")
+        vtxt = stats.get("Validity", "—")
+        ntxt = stats.get("Novelty", "—")
+        st.caption(f"Generation validity **{vtxt}** · novelty **{ntxt}** (see *Technical details* for charts).")
     else:
-        col5.metric("Activity R^2", "N/A")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Generated", f"{len(raw_candidates):,}")
+        col2.metric("Unique", f"{raw_candidates['candidate'].nunique():,}")
+        col3.metric("Validity", f"{stats.get('Validity', 'N/A')}")
+        col4.metric("Novelty", f"{stats.get('Novelty', 'N/A')}")
+        if (PROPERTY_DIR / "metrics.json").exists():
+            m = json.loads((PROPERTY_DIR / "metrics.json").read_text(encoding="utf-8"))
+            r2 = m.get("activity", {}).get("r2")
+            col5.metric("Activity R^2", f"{r2:.3f}" if r2 is not None else "N/A")
+        else:
+            col5.metric("Activity R^2", "N/A")
 
     st.subheader("Top Ranked Candidates")
     if clean_df.empty:
@@ -413,10 +498,17 @@ with tab_discover:
         )
         st.dataframe(raw_candidates.head(top_n), use_container_width=True)
     else:
-        st.caption(
-            f"Cleaned shortlist from {clean_path.name}. STY calibrated to training-set rank "
-            "percentiles; selectivity and stability shown as priors / proxies until lab data lands."
-        )
+        if clean_ranked_by_activity_head:
+            st.caption(
+                f"**STY** = ActivityHead (μ from CVAE; median T/P from `{_train_csv_rel}`). "
+                "`raw_score` = generation NN. Selectivity / stability = priors."
+            )
+        else:
+            st.caption(
+                "**STY** = NN score mapped to training quantiles (not the ActivityHead). "
+                "Use sidebar **Refresh shortlist** → second command for head-aligned STY. "
+                "Selectivity / stability = priors."
+            )
         display_cols = [
             "composition_view",
             "predicted_sty_g_h_gcat",
@@ -451,43 +543,51 @@ with tab_discover:
             mime="text/csv",
         )
 
-    st.subheader("Element Frequency")
-    elements_df = element_frequency(raw_candidates["candidate"])
-    if elements_df.empty:
-        st.info("No element tokens found.")
-    else:
-        st.bar_chart(elements_df.set_index("element")["count"].head(15))
-
-    st.subheader("Generation Metrics")
-    if stats:
-        st.json(stats)
-    else:
-        st.info("No generation_stats_*.txt found for this run.")
-
-    st.subheader("Training Trends")
-    tcol1, tcol2 = st.columns(2)
-    with tcol1:
-        st.markdown("**Report: train/val loss**")
-        if train_df.empty:
-            st.info("report.txt not found.")
+    _tech_expanded = not simple_ui
+    with st.expander("Technical details (elements, raw stats, training curves)", expanded=_tech_expanded):
+        st.subheader("Element frequency")
+        elements_df = element_frequency(raw_candidates["candidate"])
+        if elements_df.empty:
+            st.info("No element tokens found.")
         else:
-            st.line_chart(train_df.set_index("epoch")[["t_loss", "v_loss", "opt_loss"]])
-    with tcol2:
-        st.markdown("**Loss breakdown**")
-        if loss_df.empty:
-            st.info("loss.txt not found.")
-        else:
-            st.line_chart(loss_df.set_index("epoch")[["recon_t", "recon_v", "nn_t", "nn_v"]])
+            st.bar_chart(elements_df.set_index("element")["count"].head(15))
 
-    if not hyper_row.empty:
-        with st.expander("Hyperparameter snapshot"):
+        st.subheader("Generation metrics (raw)")
+        if stats:
+            st.json(stats)
+        else:
+            st.info("No generation_stats_*.txt found for this run.")
+
+        st.subheader("Training curves")
+        tcol1, tcol2 = st.columns(2)
+        with tcol1:
+            st.markdown("Train / val loss")
+            if train_df.empty:
+                st.info("report.txt not found.")
+            else:
+                st.line_chart(train_df.set_index("epoch")[["t_loss", "v_loss", "opt_loss"]])
+        with tcol2:
+            st.markdown("Reconstruction + NN loss")
+            if loss_df.empty:
+                st.info("loss.txt not found.")
+            else:
+                st.line_chart(loss_df.set_index("epoch")[["recon_t", "recon_v", "nn_t", "nn_v"]])
+
+        if not hyper_row.empty:
+            st.markdown("**Hyperparameter snapshot**")
             st.dataframe(hyper_row, use_container_width=True)
 
 
 # ------------------------------------------------------------- PATHWAY
 with tab_pathway:
     st.subheader("Reaction Pathway (free energy)")
-    if clean_df.empty:
+    if profile.id != "co2_methanol":
+        st.info(
+            "Free-energy pathway diagrams in this build are parameterized for CO₂→methanol "
+            "(HCOO / RWGS). Add a reaction-specific energy module before using this tab for "
+            f"{profile.label}."
+        )
+    elif clean_df.empty:
         st.info("Run scripts/postprocess_candidates.py to populate the candidate list first.")
     else:
         choices = clean_df.apply(
@@ -526,14 +626,14 @@ with tab_pathway:
             )
 
         chosen_smiles = clean_df.iloc[choice_idx]["pseudo_smiles"]
-        profile = compute_energy_profile(chosen_smiles, mechanism, backend)
-        st.caption(f"Backend used: **{profile['backend']}**. {profile['citation']}")
-        st.image(render_energy_diagram(profile), use_container_width=True)
-        if profile["notes"]:
-            st.info(profile["notes"])
-        if profile["extras"]:
+        energy_profile = compute_energy_profile(chosen_smiles, mechanism, backend)
+        st.caption(f"Backend used: **{energy_profile['backend']}**. {energy_profile['citation']}")
+        st.image(render_energy_diagram(energy_profile), use_container_width=True)
+        if energy_profile["notes"]:
+            st.info(energy_profile["notes"])
+        if energy_profile["extras"]:
             with st.expander("Underlying binding-energy descriptors (eV)"):
-                st.json(profile["extras"])
+                st.json(energy_profile["extras"])
 
 
 # ------------------------------------------------------------- COMPARE
@@ -551,7 +651,7 @@ with tab_compare:
                 "source": "CatalyticIQ-novel",
             }
         )
-        known_rows = load_known_catalysts("co2_to_methanol")
+        known_rows = load_known_catalysts(profile.retrieval_reaction)
         if known_rows:
             known_df = pd.DataFrame(
                 [
@@ -582,9 +682,8 @@ with tab_compare:
             use_container_width=True,
         )
         st.caption(
-            "Bubble size encodes the descriptor-based stability proxy. Selectivity is a "
-            "composition-weighted prior calibrated against TheMeCat — replace with measured "
-            "values via the Feedback tab as lab data lands."
+            "Bubble size ≈ stability proxy (descriptor). Selectivity ≈ composition prior "
+            + ("(methanol-oriented placeholder for this reaction)." if profile.id != "co2_methanol" else "(TheMeCat-style prior).")
         )
         st.dataframe(combined.sort_values("predicted_sty_g_h_gcat", ascending=False).head(20), use_container_width=True)
 
@@ -592,31 +691,41 @@ with tab_compare:
 # ------------------------------------------------------------- KNOWLEDGE BASE
 with tab_kb:
     st.subheader("Known catalysts (Materials Project + OCP)")
-    known = load_known_catalysts("co2_to_methanol")
+    known = load_known_catalysts(profile.retrieval_reaction)
     if not known:
         st.info("Knowledge base is empty.")
     else:
-        st.caption(
-            f"{len(known)} curated entries. Live mp-api / fairchem are used when keys / packages "
-            "are available; otherwise the offline cache (cache/retrieval.duckdb) is consulted."
-        )
+        st.caption(f"{len(known)} entries (MP + OCP cache when offline).")
         known_df = pd.DataFrame(known)
         if "composition" in known_df.columns:
             known_df["composition"] = known_df["composition"].apply(lambda xs: "/".join(xs))
         st.dataframe(known_df, use_container_width=True)
 
-        comp_pick = st.text_input(
-            "Probe OCP binding energies for composition (slash-separated, e.g. Cu/Zn)",
-            value="Cu/Zn",
-            key="ocp_probe_tab",
-        )
-        if comp_pick.strip():
-            symbols = tuple(s.strip() for s in comp_pick.split("/") if s.strip())
-            ocp_rows = load_ocp_for_composition(symbols)
-            if ocp_rows:
-                st.dataframe(pd.DataFrame(ocp_rows), use_container_width=True)
-            else:
-                st.info(f"No OCP entries cached for composition {'/'.join(symbols)}.")
+        _ocp_title = "Optional: OCP binding lookup"
+        if simple_ui:
+            with st.expander(_ocp_title, expanded=False):
+                comp_pick = st.text_input("Composition (e.g. Cu/Zn)", value="Cu/Zn", key="ocp_probe_tab")
+                if comp_pick.strip():
+                    symbols = tuple(s.strip() for s in comp_pick.split("/") if s.strip())
+                    ocp_rows = load_ocp_for_composition(symbols)
+                    if ocp_rows:
+                        st.dataframe(pd.DataFrame(ocp_rows), use_container_width=True)
+                    else:
+                        st.info(f"No OCP entries for {'/'.join(symbols)}.")
+        else:
+            st.markdown(f"**{_ocp_title}**")
+            comp_pick = st.text_input(
+                "Probe OCP binding energies for composition (slash-separated, e.g. Cu/Zn)",
+                value="Cu/Zn",
+                key="ocp_probe_tab",
+            )
+            if comp_pick.strip():
+                symbols = tuple(s.strip() for s in comp_pick.split("/") if s.strip())
+                ocp_rows = load_ocp_for_composition(symbols)
+                if ocp_rows:
+                    st.dataframe(pd.DataFrame(ocp_rows), use_container_width=True)
+                else:
+                    st.info(f"No OCP entries cached for composition {'/'.join(symbols)}.")
 
 
 # ------------------------------------------------------------- VALIDATION
@@ -647,25 +756,26 @@ with tab_validation:
             f"{al.get('recovered_in_top50', 0)}/{al.get('n_target', 0)}",
         )
 
-        pareto_df = pd.DataFrame(
-            [
-                {"source": "random", "mean": pareto.get("random_mean", 0.0), "p95": pareto.get("random_p95", 0.0)},
-                {"source": "GA", "mean": pareto.get("ga_mean", 0.0), "p95": pareto.get("ga_p95", 0.0)},
-                {"source": "CVAE", "mean": pareto.get("cvae_mean", 0.0), "p95": pareto.get("cvae_p95", 0.0)},
-            ]
-        )
-        st.markdown("**Pareto comparison: predicted STY**")
-        st.bar_chart(pareto_df.set_index("source"))
-
         if report_pdf.exists():
             with open(report_pdf, "rb") as f:
                 st.download_button(
-                    "Download full encoder validation PDF",
+                    "Download encoder validation PDF",
                     data=f.read(),
                     file_name="encoder_report.pdf",
                     mime="application/pdf",
                 )
-        with st.expander("Full validation JSON"):
+
+        _val_extra = not simple_ui
+        with st.expander("More validation (Pareto toy comparison + raw JSON)", expanded=_val_extra):
+            pareto_df = pd.DataFrame(
+                [
+                    {"source": "random", "mean": pareto.get("random_mean", 0.0), "p95": pareto.get("random_p95", 0.0)},
+                    {"source": "GA", "mean": pareto.get("ga_mean", 0.0), "p95": pareto.get("ga_p95", 0.0)},
+                    {"source": "CVAE", "mean": pareto.get("cvae_mean", 0.0), "p95": pareto.get("cvae_p95", 0.0)},
+                ]
+            )
+            st.markdown("Pareto-style comparison (toy baselines)")
+            st.bar_chart(pareto_df.set_index("source"))
             st.json(report)
 
 
@@ -748,11 +858,12 @@ with tab_feedback:
 
                 n_pending = feedback_store.count_since_last_train("current")
                 st.caption(
-                    f"Feedback rows queued for retrain: **{n_pending}**. "
-                    "Run `python scripts/retrain_with_feedback.py --mode heads --promote` to update."
+                    f"**{n_pending}** row(s) since last train · retrain: "
+                    f"`python scripts/retrain_with_feedback.py --file {profile.id} "
+                    f"--pretrained_time <cvae_ts> --mode heads --promote`"
                 )
 
         versions = feedback_store.list_model_versions()
         if versions:
-            with st.expander("Model version history"):
+            with st.expander("Model version history", expanded=not simple_ui):
                 st.dataframe(pd.DataFrame(versions), use_container_width=True)

@@ -40,6 +40,12 @@ researcher -> reaction
   - `scripts/retrain_with_feedback.py` heads-mode and CVAE-mode with PSI drift guard.
 - **Dashboard**: `app.py` Streamlit app with six tabs — Discover, Pathway, Compare, Knowledge Base, Validation, Feedback.
 
+### Release sequencing (CO₂ build)
+
+1. Regenerate validation PDF/JSON and enforce thresholds: `bash scripts/release_check_co2.sh`
+2. Criteria live in `config/release_criteria_co2.json` (edit min R² / MAE / coverage as needed).
+3. Syngas→ethanol: `python scripts/prepare_syngas_ethanol_dataset.py --input /path/to/source.csv` then `bash scripts/finetune_syngas_ethanol.sh`; property heads use `python scripts/train_property_heads.py --file syngas_ethanol --pretrained_time <ts>` and `python scripts/validate_encoder.py --dataset syngas_ethanol`.
+
 ### Roadmap (post-Round 2 pilot)
 
 - Stage B: syngas -> ethanol (PNNL + Zenodo:11113829).
@@ -96,6 +102,16 @@ python generation.py \
 python scripts/postprocess_candidates.py \
   --candidates dataset/co2_methanol/output_0_<timestamp>/generated_mol_lat_con_<ts>.csv \
   --training dataset/co2_methanol.csv
+```
+
+Re-rank the shortlist with the **validated ActivityHead** (same μ as `validate_encoder`), instead of the raw CVAE `NN_PREDICTION` score:
+
+```bash
+python scripts/postprocess_candidates.py \
+  --candidates dataset/co2_methanol/output_0_<timestamp>/generated_mol_lat_con_<ts>.csv \
+  --training dataset/co2_methanol.csv \
+  --use-activity-head \
+  --cvae-run-dir dataset/co2_methanol/output_0_<timestamp>
 ```
 
 ### 6. Train property heads
