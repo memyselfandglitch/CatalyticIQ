@@ -51,3 +51,13 @@ dataset/*/property_heads/head_*_v_feedback.pth
 !dataset/ps.csv
 !dataset/l_sm.csv
 !dataset/bh_test1.csv
+
+# Small deterministic artifacts required for the public Streamlit demo.
+!dataset/co2_methanol/output_0_20260503_190505/
+dataset/co2_methanol/output_0_20260503_190505/*
+!dataset/co2_methanol/output_0_20260503_190505/generated_candidates_clean.csv
+!dataset/co2_methanol/output_0_20260503_190505/generated_mol_lat_con_20260503_213348.csv
+!dataset/co2_methanol/output_0_20260503_190505/generated_stats_lat_con_20260503_213348.txt
+!dataset/co2_methanol/output_0_20260503_190505/simulation_validation.csv
+!dataset/co2_methanol/output_0_20260503_190505/report.txt
+!dataset/co2_methanol/output_0_20260503_190505/loss.txt

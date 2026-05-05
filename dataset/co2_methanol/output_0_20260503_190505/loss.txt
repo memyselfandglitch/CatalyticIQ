@@ -1,0 +1,8 @@
+epoch: 0	recon_t: 6.79570	kl_t: 0.00000	nn_t: 15.68291	recon_v: 6.54243	kl_v: 0.00000	nn_v: 44.85913	an_step: 0	slop: 0.00000
+epoch: 1	recon_t: 5.81677	kl_t: 0.00002	nn_t: 0.17954	recon_v: 5.60286	kl_v: 0.00002	nn_v: 0.20242	an_step: 1	slop: 0.00025
+epoch: 2	recon_t: 5.26649	kl_t: 0.00007	nn_t: 0.17670	recon_v: 5.03901	kl_v: 0.00007	nn_v: 0.19592	an_step: 2	slop: 0.00099
+epoch: 3	recon_t: 4.79931	kl_t: 0.00015	nn_t: 0.17008	recon_v: 4.67711	kl_v: 0.00016	nn_v: 0.19592	an_step: 3	slop: 0.00222
+epoch: 4	recon_t: 4.48051	kl_t: 0.00027	nn_t: 0.16967	recon_v: 4.51235	kl_v: 0.00030	nn_v: 0.19592	an_step: 4	slop: 0.00394
+epoch: 5	recon_t: 4.18997	kl_t: 0.00043	nn_t: 0.16979	recon_v: 4.32628	kl_v: 0.00046	nn_v: 0.19592	an_step: 5	slop: 0.00616
+epoch: 6	recon_t: 3.99900	kl_t: 0.00062	nn_t: 0.16788	recon_v: 4.01225	kl_v: 0.00064	nn_v: 0.19592	an_step: 6	slop: 0.00886
+epoch: 7	recon_t: 3.85727	kl_t: 0.00086	nn_t: 0.16688	recon_v: 4.04764	kl_v: 0.00168	nn_v: 0.19592	an_step: 7	slop: 0.01204

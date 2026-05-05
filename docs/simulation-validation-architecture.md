@@ -34,7 +34,7 @@ services/simulation/cantera_validator.py
 Run it with:
 
 ```bash
-conda run -n catdrx python scripts/validate_shortlist_simulation.py \
+conda run -n catalyticiq python scripts/validate_shortlist_simulation.py \
   --candidates dataset/co2_methanol/output_0_<timestamp>/generated_candidates_clean.csv \
   --reaction-config config/reactions/co2_methanol.yaml
 ```
@@ -107,7 +107,7 @@ Stage A: Current MVP
 Run a smoke sweep:
 
 ```bash
-conda run -n catdrx python scripts/generate_cantera_sweep.py \
+conda run -n catalyticiq python scripts/generate_cantera_sweep.py \
   --reaction-config config/reactions/co2_methanol.yaml \
   --candidates dataset/co2_methanol/output_0_20260503_190505/generated_candidates_clean.csv \
   --output dataset/simulation/co2_methanol_sweep_smoke.csv \
@@ -118,7 +118,7 @@ conda run -n catdrx python scripts/generate_cantera_sweep.py \
 Train a surrogate from that sweep:
 
 ```bash
-conda run -n catdrx python scripts/train_simulation_surrogate.py \
+conda run -n catalyticiq python scripts/train_simulation_surrogate.py \
   --input dataset/simulation/co2_methanol_sweep_smoke.csv \
   --target simulated_sty_g_h_gcat \
   --output-dir dataset/simulation/surrogates/co2_methanol_smoke

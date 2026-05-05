@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +20,7 @@ class ReactionProfile:
     full_csv_relative: str
     reaction_config_relative: str
     caption: str
+    public_demo: bool = False
 
 
 PROFILES: tuple[ReactionProfile, ...] = (
@@ -30,6 +32,7 @@ PROFILES: tuple[ReactionProfile, ...] = (
         full_csv_relative="dataset/co2_methanol_full.csv",
         reaction_config_relative="config/reactions/co2_methanol.yaml",
         caption="Generative AI + multi-property prediction + reaction-energy estimation + lab feedback.",
+        public_demo=True,
     ),
     ReactionProfile(
         id="syngas_ethanol",
@@ -38,7 +41,11 @@ PROFILES: tuple[ReactionProfile, ...] = (
         retrieval_reaction="syngas_to_ethanol",
         full_csv_relative="dataset/syngas_ethanol_full.csv",
         reaction_config_relative="config/reactions/syngas_ethanol.yaml",
-        caption="Pilot track: same discovery stack once `dataset/syngas_ethanol.csv` is built from PNNL / Zenodo corpora.",
+        caption=(
+            "Pilot track: same discovery stack once reaction-specific outputs, heads, "
+            "and validation artifacts are promoted for demo use."
+        ),
+        public_demo=False,
     ),
 )
 
@@ -55,6 +62,21 @@ def dataset_dir(profile: ReactionProfile) -> Path:
     return ROOT / "dataset" / profile.dataset_subdir
 
 
+def has_output_runs(profile: ReactionProfile) -> bool:
+    base = dataset_dir(profile)
+    return base.exists() and any(p.is_dir() and p.name.startswith("output_") for p in base.iterdir())
+
+
 def list_profiles_for_ui() -> list[ReactionProfile]:
-    """All registered reactions (each tab shows an error until that reaction has output_* runs)."""
-    return list(PROFILES)
+    """Public dashboard profiles.
+
+    The hackathon dashboard is intentionally CO2-focused. Pilot reactions remain
+    registered for code reuse, but are hidden unless explicitly enabled with
+    ``CATALYTICIQ_SHOW_PILOTS=1``.
+    """
+    show_pilots = os.environ.get("CATALYTICIQ_SHOW_PILOTS", "").lower() in {"1", "true", "yes"}
+    return [
+        profile
+        for profile in PROFILES
+        if profile.public_demo or (show_pilots and has_output_runs(profile))
+    ]

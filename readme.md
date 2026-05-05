@@ -24,7 +24,7 @@ researcher -> reaction
 - **Post-processing**: dedup, support-to-oxide mapping, score calibration (`scripts/postprocess_candidates.py`).
 - **Multi-property prediction**:
   - `ActivityHead` MLP on the latent embedding (R^2 = 0.755, MAE = 0.10 g/h/g_cat).
-  - `SelectivityHead` MLP on the same embedding (R^2 = 0.43 on TheMeCat selectivity rows).
+  - `SelectivityHead` MLP on the same embedding (R^2 = 0.461 on TheMeCat selectivity rows).
   - `StabilityHead` descriptor proxy (Tammann / Hüttig temperatures + redox class).
 - **YAML-driven simulation validation** (`services/simulation/cantera_validator.py` + `config/reactions/*.yaml`): analytic van't Hoff equilibrium, pressure-corrected conversion solve, catalyst descriptor score, and Cantera equilibrium cross-check when the selected mechanism contains the required species. The YAML defines reaction stoichiometry plus sweep ranges; `scripts/generate_cantera_sweep.py` turns those ranges into simulation-labelled CSV rows for surrogate training. The current CO2 artifact reports `yaml_cantera_plus_analytic_microkinetic`.
 - **Reaction-energy diagrams** (`catcvae/reaction_energy.py`) with three pluggable backends:
@@ -35,7 +35,7 @@ researcher -> reaction
   - `services/retrieval/materials_project.py` (mp-api with `MP_API_KEY`, offline cache fallback).
   - `services/retrieval/open_catalyst.py` (fairchem live, offline binding-energy seed).
   - `services/retrieval/cache.py` DuckDB cache with provenance log.
-- **Encoder validation suite** (`scripts/validate_encoder.py`): held-out R^2 0.755 with 93% 90% interval coverage, latent-neighbour Jaccard 0.92, top-decile coherence 48%, active-learning recovery 8/20 in top-50, Pareto comparison vs random and GA baselines.
+- **Encoder validation suite** (`scripts/validate_encoder.py`): held-out R^2 0.775 with 93.9% 90% interval coverage, latent-neighbour Jaccard 0.92, top-decile coherence 48%, active-learning recovery 8/20 in top-50, Pareto comparison vs random and GA baselines.
 - **Lab feedback loop**:
   - `services/feedback/store.py` DuckDB store with append-only experiments + model_versions.
   - `scripts/retrain_with_feedback.py` heads-mode and CVAE-mode with PSI drift guard.
@@ -46,7 +46,7 @@ researcher -> reaction
 One-command artifact refresh for the video demo:
 
 ```bash
-conda run -n catdrx python scripts/run_co2_demo.py --sweep-samples 200
+conda run -n catalyticiq python scripts/run_co2_demo.py --sweep-samples 200
 ```
 
 That command runs:
@@ -60,7 +60,7 @@ postprocess generated candidates
 ```
 
 ```bash
-conda run -n catdrx python -m py_compile \
+conda run -n catalyticiq python -m py_compile \
   app.py \
   services/simulation/reaction_config.py \
   services/simulation/cantera_validator.py \
@@ -73,7 +73,7 @@ conda run -n catdrx python -m py_compile \
 ```
 
 ```bash
-conda run -n catdrx python scripts/validate_shortlist_simulation.py \
+conda run -n catalyticiq python scripts/validate_shortlist_simulation.py \
   --candidates dataset/co2_methanol/output_0_20260503_190505/generated_candidates_clean.csv \
   --reaction-config config/reactions/co2_methanol.yaml \
   --output dataset/co2_methanol/output_0_20260503_190505/simulation_validation.csv
@@ -88,7 +88,7 @@ yaml_cantera_plus_analytic_microkinetic
 Generate a smoke simulation sweep from the YAML ranges:
 
 ```bash
-conda run -n catdrx python scripts/generate_cantera_sweep.py \
+conda run -n catalyticiq python scripts/generate_cantera_sweep.py \
   --reaction-config config/reactions/co2_methanol.yaml \
   --candidates dataset/co2_methanol/output_0_20260503_190505/generated_candidates_clean.csv \
   --output dataset/simulation/co2_methanol_sweep_smoke.csv \
@@ -99,7 +99,7 @@ conda run -n catdrx python scripts/generate_cantera_sweep.py \
 Train a fast surrogate on the sweep output:
 
 ```bash
-conda run -n catdrx python scripts/train_simulation_surrogate.py \
+conda run -n catalyticiq python scripts/train_simulation_surrogate.py \
   --input dataset/simulation/co2_methanol_sweep_smoke.csv \
   --target simulated_sty_g_h_gcat \
   --output-dir dataset/simulation/surrogates/co2_methanol_smoke
@@ -108,12 +108,12 @@ conda run -n catdrx python scripts/train_simulation_surrogate.py \
 Import example lab feedback and run a heads-only retraining demo:
 
 ```bash
-conda run -n catdrx python scripts/import_feedback_csv.py \
+conda run -n catalyticiq python scripts/import_feedback_csv.py \
   --input dataset/feedback/co2_methanol_lab_results_example.csv
 ```
 
 ```bash
-conda run -n catdrx python scripts/retrain_with_feedback.py \
+conda run -n catalyticiq python scripts/retrain_with_feedback.py \
   --file co2_methanol \
   --pretrained_time 20260503_190505 \
   --mode heads
@@ -122,7 +122,7 @@ conda run -n catdrx python scripts/retrain_with_feedback.py \
 Launch the dashboard:
 
 ```bash
-conda run --no-capture-output -n catdrx streamlit run app.py --server.port 8501 --server.address 127.0.0.1
+conda run --no-capture-output -n catalyticiq streamlit run app.py --server.port 8501 --server.address 127.0.0.1
 ```
 
 ### Release sequencing (CO2 build)
@@ -134,7 +134,7 @@ conda run --no-capture-output -n catdrx streamlit run app.py --server.port 8501 
 ### Roadmap (post-Round 2 pilot)
 
 - Stage B: syngas -> ethanol (cleaned Zenodo 11639494 HAS data -> `dataset/syngas_ethanol.csv`; latest clean rerun `dataset/syngas_ethanol/output_0_20260505_172240/`). This is an extension, not the main demo.
-- Stage C: ethanol -> jet (GPS Renewables proprietary lab data). This should be piloted after internal data access.
+- Stage C: ethanol -> hydrocarbons / jet-range products (GPS Renewables proprietary lab data). This should be piloted after internal data access.
 - Direction 2: synthetic biology track (BRENDA + ESM/AlphaFold).
 - Multi-user collaboration (auth, roles, per-user audit), full lab system integrations.
 - High-fidelity pilot simulation: Cantera mechanism refinement, CatMAP-style microkinetics, FairChem/OCP adsorption energies, and GPS-specific reactor models.
@@ -150,6 +150,10 @@ python -m pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spl
 python -m pip install torch-geometric==2.5.2 duckdb openpyxl torchmetrics streamlit
 conda install -c conda-forge cantera
 ```
+
+If you already created the older local `catdrx` environment, substitute
+`catdrx` for `catalyticiq` in the commands or set
+`CATALYTICIQ_CONDA_ENV=catdrx` before launching Streamlit.
 
 ### 2. Build the merged CO2->methanol dataset
 

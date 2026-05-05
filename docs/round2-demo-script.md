@@ -1,7 +1,8 @@
 # Round 2 Demo Script: CO2-to-Methanol Closed Loop
 
 This walkthrough keeps the demo focused on **Direction 1: Chemical Catalysis** for
-`CO2 + green H2 -> methanol`. Syngas-to-ethanol and ethanol-to-jet are mentioned
+`CO2 + green H2 -> methanol`. Syngas-to-ethanol and ethanol-to-hydrocarbons /
+jet-range products are mentioned
 only as pilot extensions.
 
 ## 0. Pre-flight
@@ -9,13 +10,13 @@ only as pilot extensions.
 Refresh the committed artifacts:
 
 ```bash
-conda run -n catdrx python scripts/run_co2_demo.py --sweep-samples 200
+conda run -n catalyticiq python scripts/run_co2_demo.py --sweep-samples 200
 ```
 
 Launch the dashboard:
 
 ```bash
-conda run --no-capture-output -n catdrx streamlit run app.py \
+conda run --no-capture-output -n catalyticiq streamlit run app.py \
   --server.port 8501 \
   --server.address 127.0.0.1
 ```
@@ -112,14 +113,14 @@ Open **Feedback**.
 Show the import command:
 
 ```bash
-conda run -n catdrx python scripts/import_feedback_csv.py \
+conda run -n catalyticiq python scripts/import_feedback_csv.py \
   --input dataset/feedback/co2_methanol_lab_results_example.csv
 ```
 
 Then show the heads-only retraining command:
 
 ```bash
-conda run -n catdrx python scripts/retrain_with_feedback.py \
+conda run -n catalyticiq python scripts/retrain_with_feedback.py \
   --file co2_methanol \
   --pretrained_time 20260503_190505 \
   --mode heads
@@ -139,5 +140,6 @@ Closing line:
 > known catalyst baseline, novel catalyst generation, predictive ranking,
 > thermodynamic/Cantera simulation validation, visual comparison, export, and
 > feedback-driven retraining. The demo is CO2-to-methanol today; the pilot path
-> extends the same backbone to syngas-to-ethanol and ethanol-to-jet as data
+> extends the same backbone to syngas-to-ethanol and ethanol-to-hydrocarbons /
+> jet-range products as data
 > becomes available.

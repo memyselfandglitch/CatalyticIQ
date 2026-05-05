@@ -4,7 +4,7 @@ This document maps the CatalyticIQ Round 2 prototype to every requirement of The
 
 ## 1. Understanding of the problem
 
-GPS Renewables is building India's first Ethanol-to-Jet plant, but this prototype deliberately focuses on one chemical catalysis loop: **CO2 + H2 -> methanol**. This gives the hackathon demo one strong reaction family with real literature data, a fine-tuned generative model, simulation validation, and a feedback/retraining path. Syngas -> ethanol and ethanol -> jet hydrocarbons remain pilot extensions that reuse the same architecture after reaction-specific data access.
+GPS Renewables is building India's first Ethanol-to-Jet plant, but this prototype deliberately focuses on one chemical catalysis loop: **CO2 + H2 -> methanol**. This gives the hackathon demo one strong reaction family with real literature data, a fine-tuned generative model, simulation validation, and a feedback/retraining path. Syngas -> ethanol and ethanol -> hydrocarbons / jet-range products remain pilot extensions that reuse the same architecture after reaction-specific data access.
 
 CatalyticIQ replaces brute-force search with an AI loop that proposes novel candidates, ranks them on the same axes a chemist cares about (activity / selectivity / stability / energy profile), validates them through thermodynamic/Cantera simulation, and tightens predictions every time a lab result returns. This document describes the platform as it stands at Round 2: **CO2->methanol, Direction 1: Chemical Catalysis**.
 
@@ -36,7 +36,7 @@ The platform is split across four layers; each maps to concrete code.
 - **Generative**: reaction-conditioned VAE (the existing CatDRX architecture, fine-tuned in `dataset/co2_methanol/output_0_20260503_190505/`).
 - **Predictive heads** (latent-MLP on the frozen encoder embedding):
   - `ActivityHead` — methanol STY, R^2 = 0.755 on a held-out 196-row test split, MAE 0.10 g/h/g_cat.
-  - `SelectivityHead` — joint MeOH / CO selectivity, R^2 = 0.43 on the 605-row TheMeCat-only test slice.
+  - `SelectivityHead` — joint MeOH / CO selectivity, R^2 = 0.461 on the 605-row TheMeCat-only test slice.
   - `StabilityHead` — composition-weighted Tammann / Hüttig / redox-class proxy in `catcvae/stability_descriptors.py`.
 - **Validation suite** (`scripts/validate_encoder.py`):
   - Held-out predictor R^2 + 90% interval coverage.
@@ -98,7 +98,7 @@ The feedback loop is the load-bearing differentiator and is implemented end-to-e
 |-------|----------|---------|-------------|
 | A (now) | CO2 -> methanol | TheMeCat + Suvarna (1,946 rows) | shipped in this prototype |
 | B | syngas -> ethanol | cleaned HAS / Zenodo data | pilot extension using the same base model architecture |
-| C | ethanol -> jet | GPS Renewables proprietary lab data | requires the pilot data agreement |
+| C | ethanol -> hydrocarbons / jet-range products | GPS Renewables proprietary lab data | requires the pilot data agreement |
 | D | enzyme / pathway design | BRENDA + UniProt + AlphaFold | adds a parallel `catcvae/protein_*` track |
 
 The pilot work plan is to deliver Stage B end-to-end within 2 weeks of pilot kick-off, Stage C as soon as proprietary data lands, and Stage D in parallel once the synthetic-biology SME is on board.

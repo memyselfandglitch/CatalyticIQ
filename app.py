@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -12,6 +13,7 @@ import streamlit as st
 
 
 ROOT = Path(__file__).resolve().parent
+CONDA_ENV = os.environ.get("CATALYTICIQ_CONDA_ENV", "catalyticiq")
 
 
 def _relative_to_repo(path: Path) -> str:
@@ -500,13 +502,13 @@ _gen_rel = _relative_to_repo(selected_gen_csv_path)
 _run_rel = _relative_to_repo(selected_run)
 _out_rel = f"{_run_rel}/generated_candidates_clean.csv"
 _pp_base = (
-    f"conda run -n catdrx python scripts/postprocess_candidates.py \\\n"
+    f"conda run -n {CONDA_ENV} python scripts/postprocess_candidates.py \\\n"
     f"  --candidates {_gen_rel} \\\n"
     f"  --training {_train_csv_rel} \\\n"
     f"  --output {_out_rel}"
 )
 _pp_activity = (
-    f"conda run -n catdrx python scripts/postprocess_candidates.py \\\n"
+    f"conda run -n {CONDA_ENV} python scripts/postprocess_candidates.py \\\n"
     f"  --candidates {_gen_rel} \\\n"
     f"  --training {_train_csv_rel} \\\n"
     f"  --dataset-file {profile.id} \\\n"
@@ -517,7 +519,7 @@ _pp_activity = (
 _sim_rel = f"{_run_rel}/simulation_validation.csv"
 _reaction_cfg_rel = profile.reaction_config_relative
 _sim_cmd = (
-    f"conda run -n catdrx python scripts/validate_shortlist_simulation.py \\\n"
+    f"conda run -n {CONDA_ENV} python scripts/validate_shortlist_simulation.py \\\n"
     f"  --candidates {_out_rel} \\\n"
     f"  --reaction-config {_reaction_cfg_rel} \\\n"
     f"  --output {_sim_rel} \\\n"
@@ -527,27 +529,27 @@ _sim_cmd = (
 _sweep_rel = _relative_to_repo(simulation_sweep_path(profile.id))
 _surrogate_rel = f"dataset/simulation/surrogates/{profile.id}"
 _sweep_cmd = (
-    f"conda run -n catdrx python scripts/generate_cantera_sweep.py \\\n"
+    f"conda run -n {CONDA_ENV} python scripts/generate_cantera_sweep.py \\\n"
     f"  --reaction-config {_reaction_cfg_rel} \\\n"
     f"  --candidates {_out_rel} \\\n"
     f"  --output {_sweep_rel}"
 )
 _surrogate_cmd = (
-    f"conda run -n catdrx python scripts/train_simulation_surrogate.py \\\n"
+    f"conda run -n {CONDA_ENV} python scripts/train_simulation_surrogate.py \\\n"
     f"  --input {_sweep_rel} \\\n"
     f"  --target simulated_sty_g_h_gcat \\\n"
     f"  --output-dir {_surrogate_rel}"
 )
 _co2_demo_cmd = (
-    "conda run -n catdrx python scripts/run_co2_demo.py "
+    f"conda run -n {CONDA_ENV} python scripts/run_co2_demo.py "
     "--sweep-samples 200"
 )
 _feedback_import_cmd = (
-    "conda run -n catdrx python scripts/import_feedback_csv.py \\\n"
+    f"conda run -n {CONDA_ENV} python scripts/import_feedback_csv.py \\\n"
     "  --input dataset/feedback/co2_methanol_lab_results_example.csv"
 )
 _feedback_retrain_cmd = (
-    f"conda run -n catdrx python scripts/retrain_with_feedback.py \\\n"
+    f"conda run -n {CONDA_ENV} python scripts/retrain_with_feedback.py \\\n"
     f"  --file {profile.id} \\\n"
     f"  --pretrained_time 20260503_190505 \\\n"
     f"  --mode heads"
