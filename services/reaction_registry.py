@@ -17,6 +17,7 @@ class ReactionProfile:
     dataset_subdir: str
     retrieval_reaction: str
     full_csv_relative: str
+    reaction_config_relative: str
     caption: str
 
 
@@ -27,6 +28,7 @@ PROFILES: tuple[ReactionProfile, ...] = (
         dataset_subdir="co2_methanol",
         retrieval_reaction="co2_to_methanol",
         full_csv_relative="dataset/co2_methanol_full.csv",
+        reaction_config_relative="config/reactions/co2_methanol.yaml",
         caption="Generative AI + multi-property prediction + reaction-energy estimation + lab feedback.",
     ),
     ReactionProfile(
@@ -35,6 +37,7 @@ PROFILES: tuple[ReactionProfile, ...] = (
         dataset_subdir="syngas_ethanol",
         retrieval_reaction="syngas_to_ethanol",
         full_csv_relative="dataset/syngas_ethanol_full.csv",
+        reaction_config_relative="config/reactions/syngas_ethanol.yaml",
         caption="Pilot track: same discovery stack once `dataset/syngas_ethanol.csv` is built from PNNL / Zenodo corpora.",
     ),
 )

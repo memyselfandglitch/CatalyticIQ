@@ -54,7 +54,7 @@ The platform is split across four layers; each maps to concrete code.
   - **Tier A (`heuristic_scaling`)** — composition-weighted pure-element binding energies (eV) fed through piecewise scaling relations to a six-step HCOO or RWGS profile. Always available.
   - **Tier B (`xtb_topn`)** — GFN2-xTB single-point on a 19-atom icosahedral cluster surrogate of the dominant active metal. Activates when `xtb-python` is importable; otherwise degrades to Tier A and labels the result honestly in the UI.
   - **Tier C (`dft_topk`)** — Open Catalyst Project IS2RE composition match via `fairchem`, falling through to ASE+GPAW for unmatched compositions. Activates when `fairchem` is importable.
-- COMSOL .mph reactor surrogate is in the pilot roadmap; the architecture leaves a clean integration point at `services/simulation/` (not yet implemented in code).
+- `services/simulation/` now provides a simulation-validation seam: analytic thermodynamic equilibrium, pressure-corrected conversion solving, catalyst descriptor scoring, and optional Cantera equilibrium checks when Cantera is installed. Pilot work can deepen this with CatMAP microkinetics, FairChem/OCP adsorption energies, and GPS-specific reactor models.
 
 ### 3.4 User interface
 

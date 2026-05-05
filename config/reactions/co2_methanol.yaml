@@ -1,0 +1,77 @@
+id: co2_methanol
+name: CO2 hydrogenation to methanol
+family: co2_h2_to_methanol
+cantera_mechanism: gri30.yaml
+default_conditions:
+  temperature_c: 240.0
+  pressure_bar: 50.0
+sweep:
+  n_samples: 200
+  seed: 42
+  variables:
+    temperature_c: [180.0, 300.0]
+    pressure_bar: [20.0, 100.0]
+    ghsv_h: [2000.0, 30000.0]
+    time_on_stream_h: [1.0, 200.0]
+  feed_ratios:
+    H2: [2.0, 10.0]
+    CO: [0.0, 0.5]
+    H2O: [0.0, 0.5]
+    N2: [0.0, 0.5]
+feed:
+  CO2: 1.0
+  H2: 3.0
+reference_species: CO2
+target_species:
+  - CH3OH
+byproduct_species:
+  - CO
+  - CH4
+required_species:
+  - CO2
+  - H2
+  - CH3OH
+  - H2O
+stoichiometry:
+  CO2: -1.0
+  H2: -3.0
+  CH3OH: 1.0
+  H2O: 1.0
+thermo:
+  delta_h_298_kj_mol: -49.4
+  delta_s_298_j_mol_k: -177.1
+catalyst_descriptor:
+  active_site_weights:
+    Cu: 1.00
+    Zn: 0.42
+    Zr: 0.30
+    Ti: 0.20
+    Pd: 0.34
+    Pt: 0.22
+    Ni: 0.18
+    Fe: 0.14
+    Co: 0.12
+    Rh: 0.26
+    Ru: 0.24
+    In: 0.32
+    Ce: 0.25
+    Al: 0.08
+  synergy_rules:
+    - required: [Cu, Zn]
+      bonus: 0.24
+    - required: [Cu, Zr]
+      bonus: 0.18
+    - required: [Cu, Ti]
+      bonus: 0.12
+    - required: [Pd, Zn]
+      bonus: 0.08
+    - required: [Cu, K]
+      bonus: 0.05
+    - required: [Cu, Na]
+      bonus: 0.05
+    - required: [Cu, Cs]
+      bonus: 0.05
+  poison_elements: [Br, Cl, I, F]
+  poison_penalty: 0.12
+  temperature_optimum_c: 250.0
+  temperature_spread_c: 70.0

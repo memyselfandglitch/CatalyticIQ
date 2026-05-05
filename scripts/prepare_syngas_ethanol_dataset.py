@@ -201,6 +201,12 @@ def build_zenodo_has_frame(sheets: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
         for local_i in range(2, len(sheet)):
             rec = sheet.iloc[local_i]
+            exp_value = _to_float(rec.iloc[1])
+            exp_label = int(exp_value) if np.isfinite(exp_value) else local_i - 1
+            row_id = (
+                f"{sheet_name.replace(' ', '_').lower()}-"
+                f"row{local_i - 1:03d}-exp{exp_label}"
+            )
             styha_mg = _to_float(rec.iloc[styha_col])
             ethanol_frac_in_ha = _to_float(rec.iloc[ethanol_ha_col])
             t_c = _to_float(rec.iloc[cond_cols["T [°C]"]])
@@ -223,7 +229,7 @@ def build_zenodo_has_frame(sheets: dict[str, pd.DataFrame]) -> pd.DataFrame:
             primary_loading = max([v for v in comp.values() if np.isfinite(v)] or [0.0]) * 100.0
             rows.append(
                 {
-                    "index": f"{sheet_name}-{int(_to_float(rec.iloc[1])) if np.isfinite(_to_float(rec.iloc[1])) else local_i}",
+                    "index": row_id,
                     "reactant": "[C-]#[O+]",
                     "reagent": "[H][H]",
                     "product": "CCO",

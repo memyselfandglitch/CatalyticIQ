@@ -64,6 +64,11 @@ def discover_clean_csv(run_dir: Path) -> Path | None:
     return target if target.exists() else None
 
 
+def discover_simulation_csv(run_dir: Path) -> Path | None:
+    target = run_dir / "simulation_validation.csv"
+    return target if target.exists() else None
+
+
 @st.cache_data(show_spinner=False)
 def load_candidate_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, header=None, names=["candidate", "score"])
@@ -90,6 +95,23 @@ def load_clean_candidates(path: Path) -> pd.DataFrame:
             df[col] = df[col].astype(str).str.lower().isin({"true", "1", "yes"})
     if "n_components" in df.columns:
         df["n_components"] = pd.to_numeric(df["n_components"], errors="coerce").fillna(0).astype(int)
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def load_simulation_validation(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    for col in (
+        "thermodynamic_delta_g_kj_mol",
+        "equilibrium_constant_kp",
+        "equilibrium_conversion_pct",
+        "cantera_equilibrium_conversion_pct",
+        "reaction_forward_margin",
+        "catalyst_rate_score",
+        "simulated_sty_g_h_gcat",
+    ):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
@@ -416,10 +438,23 @@ _pp_activity = (
     f"  --cvae-run-dir {_run_rel} \\\n"
     f"  --output {_out_rel}"
 )
+_sim_rel = f"{_run_rel}/simulation_validation.csv"
+_reaction_cfg_rel = profile.reaction_config_relative
+_sim_cmd = (
+    f"conda run -n catdrx python scripts/validate_shortlist_simulation.py \\\n"
+    f"  --candidates {_out_rel} \\\n"
+    f"  --reaction-config {_reaction_cfg_rel} \\\n"
+    f"  --output {_sim_rel} \\\n"
+    f"  --temperature-c 240 \\\n"
+    f"  --pressure-bar 50"
+)
 with st.sidebar.expander("Refresh shortlist (`generated_candidates_clean.csv`)"):
     st.caption("Run from repo root. First = NN rank calibration; second = ActivityHead (recommended).")
     st.code(_pp_base, language="bash")
     st.code(_pp_activity, language="bash")
+with st.sidebar.expander("Run simulation validation"):
+    st.caption("Thermodynamic equilibrium + reactor descriptor validation. Uses Cantera when installed.")
+    st.code(_sim_cmd, language="bash")
 
 
 # =========================================================================
@@ -430,7 +465,26 @@ raw_candidates = load_candidate_csv(selected_gen_csv_path)
 clean_path = discover_clean_csv(selected_run)
 clean_ranked_by_activity_head = _clean_csv_uses_activity_head(clean_path)
 clean_df = load_clean_candidates(clean_path) if clean_path is not None else pd.DataFrame()
+simulation_path = discover_simulation_csv(selected_run)
+simulation_df = load_simulation_validation(simulation_path) if simulation_path is not None else pd.DataFrame()
 if not clean_df.empty:
+    if not simulation_df.empty and "pseudo_smiles" in simulation_df.columns:
+        sim_cols = [
+            c for c in simulation_df.columns
+            if c not in {"composition_view"} and c in {
+                "pseudo_smiles",
+                "simulation_backend",
+                "thermodynamic_delta_g_kj_mol",
+                "equilibrium_conversion_pct",
+                "cantera_equilibrium_conversion_pct",
+                "reaction_forward_margin",
+                "catalyst_rate_score",
+                "simulated_sty_g_h_gcat",
+                "simulation_confidence",
+                "simulation_notes",
+            }
+        ]
+        clean_df = clean_df.merge(simulation_df[sim_cols], on="pseudo_smiles", how="left")
     if must_have_metal and "has_active_metal" in clean_df.columns:
         clean_df = clean_df[clean_df["has_active_metal"]].copy()
     if search_query.strip():
@@ -532,6 +586,14 @@ with tab_discover:
             display_cols.append("n_components")
         if "matched_methanol_family" in clean_df.columns:
             display_cols.append("matched_methanol_family")
+        for col in (
+            "equilibrium_conversion_pct",
+            "catalyst_rate_score",
+            "simulated_sty_g_h_gcat",
+            "simulation_confidence",
+        ):
+            if col in clean_df.columns:
+                display_cols.append(col)
         st.dataframe(clean_df[display_cols], use_container_width=True)
 
         st.markdown("**Top candidate 2D depictions**")

@@ -214,7 +214,7 @@ def validate_candidate(
     This is intentionally conservative and explainable: it checks for an active
     metal, credible support/promoter context, closeness to the known catalyst
     manifold, and a recognised CO2-to-methanol family. Later pilot versions can
-    add SMACT/pymatgen/COMSOL outputs as extra terms.
+    add SMACT/pymatgen/Cantera/CatMAP outputs as extra terms.
     """
     comp_set = set(components)
     n_components = len(comp_set)

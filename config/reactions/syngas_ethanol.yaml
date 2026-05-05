@@ -1,0 +1,69 @@
+id: syngas_ethanol
+name: Syngas to ethanol
+family: syngas_to_ethanol
+cantera_mechanism: gri30.yaml
+default_conditions:
+  temperature_c: 260.0
+  pressure_bar: 50.0
+sweep:
+  n_samples: 200
+  seed: 42
+  variables:
+    temperature_c: [240.0, 380.0]
+    pressure_bar: [10.0, 50.0]
+    ghsv_h: [500.0, 10000.0]
+    time_on_stream_h: [1.0, 150.0]
+  feed_ratios:
+    H2: [0.5, 3.5]
+    CO2: [0.0, 0.8]
+    H2O: [0.0, 0.3]
+    N2: [0.0, 0.5]
+feed:
+  CO: 1.0
+  H2: 2.0
+reference_species: CO
+target_species:
+  - C2H5OH
+byproduct_species:
+  - CH3OH
+  - CH4
+  - CO2
+  - C2H4
+required_species:
+  - CO
+  - H2
+  - C2H5OH
+  - H2O
+stoichiometry:
+  CO: -2.0
+  H2: -4.0
+  C2H5OH: 1.0
+  H2O: 1.0
+thermo:
+  # Approximate gas-phase 298 K values for 2CO + 4H2 -> C2H5OH + H2O.
+  # Replace with mechanism-derived values during the CRECK stage.
+  delta_h_298_kj_mol: -253.6
+  delta_s_298_j_mol_k: -452.0
+catalyst_descriptor:
+  active_site_weights:
+    Rh: 1.40
+    Mn: 0.35
+    Fe: 0.20
+    Li: 0.15
+    Co: 0.10
+    Mo: 0.10
+    Si: 0.08
+    Al: 0.06
+  synergy_rules:
+    - required: [Rh, Mn]
+      bonus: 0.25
+    - required: [Rh, Fe]
+      bonus: 0.18
+    - required: [Rh, Li]
+      bonus: 0.12
+    - required: [Fe, Co]
+      bonus: 0.08
+  poison_elements: [Br, Cl, I, F]
+  poison_penalty: 0.12
+  temperature_optimum_c: 280.0
+  temperature_spread_c: 85.0

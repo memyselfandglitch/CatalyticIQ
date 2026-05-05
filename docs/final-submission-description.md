@@ -28,7 +28,7 @@ CatalyticIQ is an end-to-end CO2-to-methanol catalyst discovery loop. A reaction
 - Stability head is descriptor-based today — the residual MLP is parameterised but unused until TOS data arrives.
 - Stage B (syngas -> ethanol) and Stage C (ethanol -> jet) re-use the same pipeline with new dataset keys; they ship in the pilot phase.
 - Direction 2 (synthetic biology) is reserved for a parallel `catcvae/protein_*` track once the SME lands.
-- Multi-user collaboration, lab-system integrations, and the COMSOL surrogate are scoped for the pilot.
+- Multi-user collaboration, lab-system integrations, and higher-fidelity Cantera/CatMAP/FairChem reactor validation are scoped for the pilot.
 
 ## Pilot intent
 

@@ -1,0 +1,31 @@
+{
+  "input_csv": "dataset/simulation/co2_methanol_sweep.csv",
+  "target": "simulated_sty_g_h_gcat",
+  "n_rows": 3000,
+  "n_train": 2250,
+  "n_test": 750,
+  "features": [
+    "temperature_c",
+    "pressure_bar",
+    "ghsv_h",
+    "time_on_stream_h",
+    "predicted_sty_g_h_gcat",
+    "validation_score",
+    "known_family_similarity",
+    "thermodynamic_delta_g_kj_mol",
+    "equilibrium_constant_kp",
+    "equilibrium_conversion_pct",
+    "cantera_equilibrium_conversion_pct",
+    "reaction_forward_margin",
+    "catalyst_rate_score",
+    "feed_CO",
+    "feed_CO2",
+    "feed_H2",
+    "feed_H2O",
+    "feed_N2"
+  ],
+  "train_r2": 0.9987719160263244,
+  "test_r2": 0.9945183346799661,
+  "train_mae": 0.0017975486696628553,
+  "test_mae": 0.003776886776283548
+}

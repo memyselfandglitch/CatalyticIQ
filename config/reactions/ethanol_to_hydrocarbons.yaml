@@ -1,0 +1,64 @@
+id: ethanol_to_hydrocarbons
+name: Ethanol to hydrocarbons
+family: ethanol_to_hydrocarbons
+cantera_mechanism: gri30.yaml
+default_conditions:
+  temperature_c: 400.0
+  pressure_bar: 10.0
+sweep:
+  n_samples: 200
+  seed: 42
+  variables:
+    temperature_c: [250.0, 500.0]
+    pressure_bar: [1.0, 20.0]
+    ghsv_h: [1.0, 55.0]
+    time_on_stream_h: [1.0, 120.0]
+  feed_ratios:
+    H2O: [0.0, 2.0]
+    H2: [0.0, 4.0]
+    N2: [0.0, 5.0]
+feed:
+  C2H5OH: 1.0
+reference_species: C2H5OH
+target_species:
+  - C2H4
+  - C3H6
+  - C4H8
+byproduct_species:
+  - CH4
+  - CO
+  - H2
+required_species:
+  - C2H5OH
+  - C2H4
+  - H2O
+stoichiometry:
+  C2H5OH: -1.0
+  C2H4: 1.0
+  H2O: 1.0
+thermo:
+  # Ethanol dehydration to ethylene: C2H5OH -> C2H4 + H2O.
+  # Longer hydrocarbon pooling is handled in later CRECK/CatMAP stages.
+  delta_h_298_kj_mol: 45.0
+  delta_s_298_j_mol_k: 126.0
+catalyst_descriptor:
+  active_site_weights:
+    HZSM-5: 1.20
+    ZSM-5: 1.00
+    SAPO-34: 0.80
+    Zn: 0.20
+    Ga: 0.20
+    P: 0.12
+    Ni: 0.10
+    Al: 0.08
+  synergy_rules:
+    - required: [HZSM-5, Zn]
+      bonus: 0.20
+    - required: [HZSM-5, Ga]
+      bonus: 0.20
+    - required: [ZSM-5, P]
+      bonus: 0.12
+  poison_elements: [Br, Cl, I, F]
+  poison_penalty: 0.10
+  temperature_optimum_c: 420.0
+  temperature_spread_c: 110.0
