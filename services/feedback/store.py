@@ -50,8 +50,15 @@ class ExperimentRecord:
     pseudo_smiles: str
     composition_view: str
     measured_sty: float | None = None
+    predicted_sty: float | None = None
     measured_selectivity: float | None = None
+    predicted_selectivity: float | None = None
+    measured_yield: float | None = None
+    predicted_yield: float | None = None
     measured_stability_tos_h: float | None = None
+    predicted_stability_tos_h: float | None = None
+    measured_enzyme_activity: float | None = None
+    predicted_enzyme_activity: float | None = None
     conditions: dict[str, Any] = field(default_factory=dict)
     user: str = "anonymous"
     notes: str = ""
@@ -63,8 +70,15 @@ class ExperimentRecord:
             self.pseudo_smiles,
             self.composition_view,
             self.measured_sty,
+            self.predicted_sty,
             self.measured_selectivity,
+            self.predicted_selectivity,
+            self.measured_yield,
+            self.predicted_yield,
             self.measured_stability_tos_h,
+            self.predicted_stability_tos_h,
+            self.measured_enzyme_activity,
+            self.predicted_enzyme_activity,
             json.dumps(self.conditions),
             self.user,
             self.notes,
@@ -112,8 +126,15 @@ class FeedbackStore:
                     pseudo_smiles         TEXT,
                     composition_view      TEXT,
                     measured_sty          DOUBLE,
+                    predicted_sty         DOUBLE,
                     measured_selectivity  DOUBLE,
+                    predicted_selectivity DOUBLE,
+                    measured_yield        DOUBLE,
+                    predicted_yield       DOUBLE,
                     measured_stability_tos_h DOUBLE,
+                    predicted_stability_tos_h DOUBLE,
+                    measured_enzyme_activity DOUBLE,
+                    predicted_enzyme_activity DOUBLE,
                     conditions_json       TEXT,
                     user                  TEXT,
                     notes                 TEXT,
@@ -122,6 +143,7 @@ class FeedbackStore:
                 )
                 """
             )
+            self._ensure_experiment_columns(con)
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS model_versions(
@@ -136,10 +158,47 @@ class FeedbackStore:
                 """
             )
 
+    def _ensure_experiment_columns(self, con: duckdb.DuckDBPyConnection) -> None:
+        """Migrate older feedback.duckdb files without losing append-only history."""
+        existing = {row[1] for row in con.execute("PRAGMA table_info('experiments')").fetchall()}
+        for name, dtype in (
+            ("predicted_sty", "DOUBLE"),
+            ("predicted_selectivity", "DOUBLE"),
+            ("measured_yield", "DOUBLE"),
+            ("predicted_yield", "DOUBLE"),
+            ("predicted_stability_tos_h", "DOUBLE"),
+            ("measured_enzyme_activity", "DOUBLE"),
+            ("predicted_enzyme_activity", "DOUBLE"),
+        ):
+            if name not in existing:
+                con.execute(f"ALTER TABLE experiments ADD COLUMN {name} {dtype}")
+
     def log_experiment(self, record: ExperimentRecord) -> None:
         with self._connect() as con:
             con.execute(
-                "INSERT INTO experiments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO experiments(
+                    candidate_id,
+                    pseudo_smiles,
+                    composition_view,
+                    measured_sty,
+                    predicted_sty,
+                    measured_selectivity,
+                    predicted_selectivity,
+                    measured_yield,
+                    predicted_yield,
+                    measured_stability_tos_h,
+                    predicted_stability_tos_h,
+                    measured_enzyme_activity,
+                    predicted_enzyme_activity,
+                    conditions_json,
+                    user,
+                    notes,
+                    logged_at,
+                    model_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 record.to_row(),
             )
 
@@ -163,15 +222,18 @@ class FeedbackStore:
         with self._connect() as con:
             rows = con.execute(
                 "SELECT candidate_id, pseudo_smiles, composition_view, measured_sty, "
-                "       measured_selectivity, measured_stability_tos_h, conditions_json, "
-                "       user, notes, logged_at, model_version "
+                "       predicted_sty, measured_selectivity, predicted_selectivity, "
+                "       measured_yield, predicted_yield, measured_stability_tos_h, "
+                "       predicted_stability_tos_h, measured_enzyme_activity, "
+                "       predicted_enzyme_activity, conditions_json, user, notes, "
+                "       logged_at, model_version "
                 "FROM experiments ORDER BY logged_at DESC LIMIT ?",
                 [limit],
             ).fetchall()
         out: list[dict] = []
         for r in rows:
             try:
-                conds = json.loads(r[6]) if r[6] else {}
+                conds = json.loads(r[13]) if r[13] else {}
             except json.JSONDecodeError:
                 conds = {}
             out.append(
@@ -180,13 +242,20 @@ class FeedbackStore:
                     "pseudo_smiles": r[1],
                     "composition_view": r[2],
                     "measured_sty": r[3],
-                    "measured_selectivity": r[4],
-                    "measured_stability_tos_h": r[5],
+                    "predicted_sty": r[4],
+                    "measured_selectivity": r[5],
+                    "predicted_selectivity": r[6],
+                    "measured_yield": r[7],
+                    "predicted_yield": r[8],
+                    "measured_stability_tos_h": r[9],
+                    "predicted_stability_tos_h": r[10],
+                    "measured_enzyme_activity": r[11],
+                    "predicted_enzyme_activity": r[12],
                     "conditions": conds,
-                    "user": r[7],
-                    "notes": r[8],
-                    "logged_at": r[9],
-                    "model_version": r[10],
+                    "user": r[14],
+                    "notes": r[15],
+                    "logged_at": r[16],
+                    "model_version": r[17],
                 }
             )
         return out

@@ -4,9 +4,9 @@ This document maps the CatalyticIQ Round 2 prototype to every requirement of The
 
 ## 1. Understanding of the problem
 
-GPS Renewables is building India's first Ethanol-to-Jet plant. Their fuel-chemistry stack stitches three reactions: **CO2 + H2 -> methanol** (front-end carbon capture leverage), **syngas -> ethanol** (mid-stream), and **ethanol -> jet hydrocarbons** (terminal product). Each reaction has its own catalyst landscape with thousands of literature data points scattered across compositions, supports, promoters, and process windows. Discovery today is dominated by trial-and-error, so the bottleneck is not catalysis chemistry per se but the cost-of-iteration.
+GPS Renewables is building India's first Ethanol-to-Jet plant, but this prototype deliberately focuses on one chemical catalysis loop: **CO2 + H2 -> methanol**. This gives the hackathon demo one strong reaction family with real literature data, a fine-tuned generative model, simulation validation, and a feedback/retraining path. Syngas -> ethanol and ethanol -> jet hydrocarbons remain pilot extensions that reuse the same architecture after reaction-specific data access.
 
-CatalyticIQ replaces brute-force search with an AI loop that proposes novel candidates, ranks them on the same axes a chemist cares about (activity / selectivity / stability / energy profile), and tightens predictions every time a lab result returns. This document describes the platform as it stands at Round 2 (CO2->methanol, Direction 1) and how each layer extends to the rest of the pilot.
+CatalyticIQ replaces brute-force search with an AI loop that proposes novel candidates, ranks them on the same axes a chemist cares about (activity / selectivity / stability / energy profile), validates them through thermodynamic/Cantera simulation, and tightens predictions every time a lab result returns. This document describes the platform as it stands at Round 2: **CO2->methanol, Direction 1: Chemical Catalysis**.
 
 ## 2. SME inclusion
 
@@ -33,7 +33,7 @@ The platform is split across four layers; each maps to concrete code.
 
 ### 3.2 AI/ML layer
 
-- **Generative**: reaction-conditioned VAE (the existing CatDRX architecture, fine-tuned in `dataset/co2_methanol/output_0_20260428_212044/`).
+- **Generative**: reaction-conditioned VAE (the existing CatDRX architecture, fine-tuned in `dataset/co2_methanol/output_0_20260503_190505/`).
 - **Predictive heads** (latent-MLP on the frozen encoder embedding):
   - `ActivityHead` — methanol STY, R^2 = 0.755 on a held-out 196-row test split, MAE 0.10 g/h/g_cat.
   - `SelectivityHead` — joint MeOH / CO selectivity, R^2 = 0.43 on the 605-row TheMeCat-only test slice.
@@ -54,7 +54,7 @@ The platform is split across four layers; each maps to concrete code.
   - **Tier A (`heuristic_scaling`)** — composition-weighted pure-element binding energies (eV) fed through piecewise scaling relations to a six-step HCOO or RWGS profile. Always available.
   - **Tier B (`xtb_topn`)** — GFN2-xTB single-point on a 19-atom icosahedral cluster surrogate of the dominant active metal. Activates when `xtb-python` is importable; otherwise degrades to Tier A and labels the result honestly in the UI.
   - **Tier C (`dft_topk`)** — Open Catalyst Project IS2RE composition match via `fairchem`, falling through to ASE+GPAW for unmatched compositions. Activates when `fairchem` is importable.
-- `services/simulation/` now provides a simulation-validation seam: analytic thermodynamic equilibrium, pressure-corrected conversion solving, catalyst descriptor scoring, and optional Cantera equilibrium checks when Cantera is installed. Pilot work can deepen this with CatMAP microkinetics, FairChem/OCP adsorption energies, and GPS-specific reactor models.
+- `services/simulation/` now provides a simulation-validation layer: analytic thermodynamic equilibrium, pressure-corrected conversion solving, catalyst descriptor scoring, and optional Cantera equilibrium checks when Cantera is installed. `scripts/generate_cantera_sweep.py` turns YAML-defined condition ranges into simulation-labelled CSV rows, and `scripts/train_simulation_surrogate.py` trains a fast regressor on those labels. Pilot work can deepen this with CatMAP microkinetics, FairChem/OCP adsorption energies, and GPS-specific reactor models.
 
 ### 3.4 User interface
 
@@ -64,7 +64,7 @@ The platform is split across four layers; each maps to concrete code.
 - **Pathway** — per-candidate free-energy diagram with HCOO / RWGS toggle and Tier A / B / C selector.
 - **Compare** — activity vs selectivity scatter merging known catalysts (MP-coloured) with CatalyticIQ-novel candidates; bubble size = stability proxy.
 - **Knowledge Base** — full Materials Project + OCP retrieval results with provenance log.
-- **Validation** — encoder validation metrics + downloadable PDF.
+- **Validation** — simulation validation, sweep-surrogate metrics, encoder validation metrics + downloadable PDF.
 - **Feedback** — experiment-log form, recent experiments table, retrain trigger guidance, model-version history.
 
 ## 4. Data feedback loops
@@ -97,7 +97,7 @@ The feedback loop is the load-bearing differentiator and is implemented end-to-e
 | Stage | Reaction | Dataset | Module gate |
 |-------|----------|---------|-------------|
 | A (now) | CO2 -> methanol | TheMeCat + Suvarna (1,946 rows) | shipped in this prototype |
-| B | syngas -> ethanol | PNNL Active-Learning (Zenodo:11113829) | requires re-running phases 1-7 with new dataset key |
+| B | syngas -> ethanol | cleaned HAS / Zenodo data | pilot extension using the same base model architecture |
 | C | ethanol -> jet | GPS Renewables proprietary lab data | requires the pilot data agreement |
 | D | enzyme / pathway design | BRENDA + UniProt + AlphaFold | adds a parallel `catcvae/protein_*` track |
 

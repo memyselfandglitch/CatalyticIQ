@@ -69,6 +69,14 @@ def discover_simulation_csv(run_dir: Path) -> Path | None:
     return target if target.exists() else None
 
 
+def simulation_surrogate_metrics_path(reaction_id: str) -> Path:
+    return ROOT / "dataset" / "simulation" / "surrogates" / reaction_id / "metrics.json"
+
+
+def simulation_sweep_path(reaction_id: str) -> Path:
+    return ROOT / "dataset" / "simulation" / f"{reaction_id}_sweep.csv"
+
+
 @st.cache_data(show_spinner=False)
 def load_candidate_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, header=None, names=["candidate", "score"])
@@ -113,6 +121,13 @@ def load_simulation_validation(path: Path) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
+
+
+@st.cache_data(show_spinner=False)
+def load_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def parse_generated_stats(path: Path) -> dict[str, Any]:
@@ -347,6 +362,67 @@ def selectivity_proxy(components: list[str]) -> float:
     return float(sum(vals) / len(vals))
 
 
+def _pct_error(actual: Any, predicted: Any) -> float | None:
+    try:
+        actual_f = float(actual)
+        predicted_f = float(predicted)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(actual_f) or pd.isna(predicted_f):
+        return None
+    return 100.0 * (actual_f - predicted_f) / max(abs(predicted_f), 1e-9)
+
+
+def _feedback_discrepancy_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for r in records:
+        sty_err = _pct_error(r.get("measured_sty"), r.get("predicted_sty"))
+        sel_delta = None
+        if r.get("measured_selectivity") is not None and r.get("predicted_selectivity") is not None:
+            sel_delta = float(r["measured_selectivity"]) - float(r["predicted_selectivity"])
+        yield_delta = None
+        if r.get("measured_yield") is not None and r.get("predicted_yield") is not None:
+            yield_delta = float(r["measured_yield"]) - float(r["predicted_yield"])
+
+        flags: list[str] = []
+        if sty_err is not None and abs(sty_err) >= 25:
+            flags.append("activity_gap")
+        if sel_delta is not None and abs(sel_delta) >= 10:
+            flags.append("selectivity_gap")
+        if yield_delta is not None and abs(yield_delta) >= 5:
+            flags.append("yield_gap")
+
+        if "activity_gap" in flags and sty_err is not None and sty_err < 0:
+            hypothesis = "Activity model overestimated productivity; inspect nearest-family similarity, descriptor confidence, and reaction-condition coverage."
+        elif "selectivity_gap" in flags:
+            hypothesis = "Selectivity prior may be underweighted for this composition; prioritize measured selectivity rows in the next head retrain."
+        elif "yield_gap" in flags:
+            hypothesis = "Yield gap suggests condition sensitivity; add more sweep/lab rows near this T/P/feed window."
+        elif flags:
+            hypothesis = "Prediction differs from measured outcome; include this row in the next feedback retrain."
+        else:
+            hypothesis = "Prediction is within current demo tolerance."
+
+        rows.append(
+            {
+                "logged_at": r.get("logged_at"),
+                "composition": r.get("composition_view"),
+                "predicted_sty": r.get("predicted_sty"),
+                "measured_sty": r.get("measured_sty"),
+                "sty_error_pct": sty_err,
+                "predicted_selectivity": r.get("predicted_selectivity"),
+                "measured_selectivity": r.get("measured_selectivity"),
+                "selectivity_delta": sel_delta,
+                "predicted_yield": r.get("predicted_yield"),
+                "measured_yield": r.get("measured_yield"),
+                "yield_delta": yield_delta,
+                "flags": ", ".join(flags) if flags else "ok",
+                "hypothesis": hypothesis,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 # =========================================================================
 # Sidebar + state
 # =========================================================================
@@ -448,6 +524,34 @@ _sim_cmd = (
     f"  --temperature-c 240 \\\n"
     f"  --pressure-bar 50"
 )
+_sweep_rel = _relative_to_repo(simulation_sweep_path(profile.id))
+_surrogate_rel = f"dataset/simulation/surrogates/{profile.id}"
+_sweep_cmd = (
+    f"conda run -n catdrx python scripts/generate_cantera_sweep.py \\\n"
+    f"  --reaction-config {_reaction_cfg_rel} \\\n"
+    f"  --candidates {_out_rel} \\\n"
+    f"  --output {_sweep_rel}"
+)
+_surrogate_cmd = (
+    f"conda run -n catdrx python scripts/train_simulation_surrogate.py \\\n"
+    f"  --input {_sweep_rel} \\\n"
+    f"  --target simulated_sty_g_h_gcat \\\n"
+    f"  --output-dir {_surrogate_rel}"
+)
+_co2_demo_cmd = (
+    "conda run -n catdrx python scripts/run_co2_demo.py "
+    "--sweep-samples 200"
+)
+_feedback_import_cmd = (
+    "conda run -n catdrx python scripts/import_feedback_csv.py \\\n"
+    "  --input dataset/feedback/co2_methanol_lab_results_example.csv"
+)
+_feedback_retrain_cmd = (
+    f"conda run -n catdrx python scripts/retrain_with_feedback.py \\\n"
+    f"  --file {profile.id} \\\n"
+    f"  --pretrained_time 20260503_190505 \\\n"
+    f"  --mode heads"
+)
 with st.sidebar.expander("Refresh shortlist (`generated_candidates_clean.csv`)"):
     st.caption("Run from repo root. First = NN rank calibration; second = ActivityHead (recommended).")
     st.code(_pp_base, language="bash")
@@ -455,6 +559,17 @@ with st.sidebar.expander("Refresh shortlist (`generated_candidates_clean.csv`)")
 with st.sidebar.expander("Run simulation validation"):
     st.caption("Thermodynamic equilibrium + reactor descriptor validation. Uses Cantera when installed.")
     st.code(_sim_cmd, language="bash")
+with st.sidebar.expander("Run full CO2 demo loop"):
+    st.caption("Postprocess -> validation -> YAML sweep -> surrogate. Recommended for the video demo.")
+    st.code(_co2_demo_cmd, language="bash")
+with st.sidebar.expander("Train simulation surrogate"):
+    st.caption("Use after simulation validation. The YAML defines the sweep; the sweep writes CSV labels.")
+    st.code(_sweep_cmd, language="bash")
+    st.code(_surrogate_cmd, language="bash")
+with st.sidebar.expander("Feedback/retraining demo"):
+    st.caption("Imports example lab outcomes, then retrains the ranking head. Full CVAE retrain waits for more rows.")
+    st.code(_feedback_import_cmd, language="bash")
+    st.code(_feedback_retrain_cmd, language="bash")
 
 
 # =========================================================================
@@ -467,6 +582,9 @@ clean_ranked_by_activity_head = _clean_csv_uses_activity_head(clean_path)
 clean_df = load_clean_candidates(clean_path) if clean_path is not None else pd.DataFrame()
 simulation_path = discover_simulation_csv(selected_run)
 simulation_df = load_simulation_validation(simulation_path) if simulation_path is not None else pd.DataFrame()
+surrogate_metrics_path = simulation_surrogate_metrics_path(profile.id)
+surrogate_metrics = load_json_file(surrogate_metrics_path)
+sweep_csv_path = simulation_sweep_path(profile.id)
 if not clean_df.empty:
     if not simulation_df.empty and "pseudo_smiles" in simulation_df.columns:
         sim_cols = [
@@ -541,6 +659,16 @@ with tab_discover:
         vtxt = stats.get("Validity", "—")
         ntxt = stats.get("Novelty", "—")
         st.caption(f"Generation validity **{vtxt}** · novelty **{ntxt}** (see *Technical details* for charts).")
+        with st.expander("Closed-loop demo status", expanded=True):
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Known baseline", f"{len(load_known_catalysts(profile.retrieval_reaction))}")
+            d2.metric("Simulation rows", f"{len(simulation_df):,}" if not simulation_df.empty else "0")
+            d3.metric(
+                "Sweep rows",
+                f"{surrogate_metrics.get('n_rows', 0):,}" if surrogate_metrics else ("ready" if sweep_csv_path.exists() else "0"),
+            )
+            test_r2 = surrogate_metrics.get("test_r2") if surrogate_metrics else None
+            d4.metric("Surrogate test R²", f"{test_r2:.3f}" if test_r2 is not None else "N/A")
     else:
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Generated", f"{len(raw_candidates):,}")
@@ -564,8 +692,9 @@ with tab_discover:
     else:
         if clean_ranked_by_activity_head:
             st.caption(
-                f"**STY** = ActivityHead (μ from CVAE; median T/P from `{_train_csv_rel}`). "
-                "`raw_score` = generation NN. Selectivity / stability = priors."
+                f"Ranking: CVAE generates candidates -> ActivityHead predicts methanol STY "
+                f"(μ from CVAE; median T/P from `{_train_csv_rel}`) -> validation gate -> "
+                "simulation/surrogate validation before export. `raw_score` = generation NN."
             )
         else:
             st.caption(
@@ -806,6 +935,44 @@ with tab_kb:
 
 # ------------------------------------------------------------- VALIDATION
 with tab_validation:
+    st.subheader("Simulation validation")
+    if simulation_df.empty:
+        st.info("No simulation_validation.csv found for this run. Use the sidebar simulation command.")
+    else:
+        sim1, sim2, sim3, sim4 = st.columns(4)
+        sim1.metric("Validated candidates", f"{len(simulation_df):,}")
+        sim2.metric(
+            "Cantera-backed rows",
+            f"{int(simulation_df['simulation_backend'].astype(str).str.contains('cantera', case=False).sum()):,}"
+            if "simulation_backend" in simulation_df.columns
+            else "N/A",
+        )
+        sim3.metric(
+            "Mean eq. conversion",
+            f"{simulation_df['equilibrium_conversion_pct'].mean():.1f}%"
+            if "equilibrium_conversion_pct" in simulation_df.columns
+            else "N/A",
+        )
+        sim4.metric(
+            "Mean simulated STY",
+            f"{simulation_df['simulated_sty_g_h_gcat'].mean():.3f}"
+            if "simulated_sty_g_h_gcat" in simulation_df.columns
+            else "N/A",
+        )
+        st.dataframe(simulation_df.head(30), use_container_width=True)
+
+    st.subheader("Sweep surrogate")
+    if not surrogate_metrics:
+        st.info("No simulation surrogate metrics found. Generate a sweep and train the surrogate from the sidebar.")
+    else:
+        sm1, sm2, sm3, sm4 = st.columns(4)
+        sm1.metric("Sweep rows", f"{surrogate_metrics.get('n_rows', 0):,}")
+        sm2.metric("Train rows", f"{surrogate_metrics.get('n_train', 0):,}")
+        sm3.metric("Test R²", f"{surrogate_metrics.get('test_r2', float('nan')):.3f}")
+        sm4.metric("Test MAE", f"{surrogate_metrics.get('test_mae', float('nan')):.4f}")
+        with st.expander("Surrogate metrics JSON", expanded=not simple_ui):
+            st.json(surrogate_metrics)
+
     st.subheader("Encoder validation")
     report_json = VALIDATION_DIR / "encoder_report.json"
     report_pdf = VALIDATION_DIR / "encoder_report.pdf"
@@ -867,6 +1034,22 @@ with tab_feedback:
         st.error(f"Feedback store unavailable: {exc}")
 
     if feedback_store is not None:
+        st.info(
+            "Demo loop: import example outcomes -> retrain the ActivityHead ranking model. "
+            "Full CVAE fine-tuning is triggered only after enough validated lab rows pass drift checks."
+        )
+        with st.expander("Feedback import and retraining commands", expanded=True):
+            st.code(_feedback_import_cmd, language="bash")
+            st.code(_feedback_retrain_cmd, language="bash")
+            example_path = ROOT / "dataset" / "feedback" / "co2_methanol_lab_results_example.csv"
+            if example_path.exists():
+                st.download_button(
+                    "Download example lab feedback CSV",
+                    data=example_path.read_bytes(),
+                    file_name="co2_methanol_lab_results_example.csv",
+                    mime="text/csv",
+                )
+
         fl, fr = st.columns([1, 1])
 
         with fl:
@@ -885,6 +1068,7 @@ with tab_feedback:
             with st.form("feedback_form", clear_on_submit=True):
                 measured_sty = st.number_input("Measured STY (g MeOH / h / g cat)", min_value=0.0, step=0.05, value=0.0)
                 measured_sel = st.number_input("Measured MeOH selectivity (%)", min_value=0.0, max_value=100.0, step=1.0, value=0.0)
+                measured_yield = st.number_input("Measured MeOH yield (%)", min_value=0.0, max_value=100.0, step=1.0, value=0.0)
                 measured_tos = st.number_input("Measured stability (h on stream)", min_value=0.0, step=10.0, value=0.0)
                 t_c = st.number_input("Temperature (C)", min_value=100.0, max_value=400.0, value=240.0)
                 p_bar = st.number_input("Pressure (bar)", min_value=1.0, max_value=200.0, value=50.0)
@@ -895,12 +1079,36 @@ with tab_feedback:
                 if submit and "(" in chosen:
                     comp_view = chosen.split(" (")[0]
                     pseudo = chosen.split("(", 1)[1].rstrip(")")
+                    predicted_row = (
+                        clean_df[clean_df["pseudo_smiles"] == pseudo].head(1)
+                        if not clean_df.empty and "pseudo_smiles" in clean_df.columns
+                        else pd.DataFrame()
+                    )
+                    predicted_sty = (
+                        float(predicted_row.iloc[0]["predicted_sty_g_h_gcat"])
+                        if not predicted_row.empty and pd.notna(predicted_row.iloc[0].get("predicted_sty_g_h_gcat"))
+                        else None
+                    )
+                    predicted_selectivity = (
+                        float(predicted_row.iloc[0]["selectivity_proxy_pct"])
+                        if not predicted_row.empty and pd.notna(predicted_row.iloc[0].get("selectivity_proxy_pct"))
+                        else None
+                    )
+                    predicted_yield = None
+                    if predicted_selectivity is not None and "equilibrium_conversion_pct" in predicted_row.columns:
+                        conv = predicted_row.iloc[0].get("equilibrium_conversion_pct")
+                        if pd.notna(conv):
+                            predicted_yield = float(conv) * predicted_selectivity / 100.0
                     rec = ExperimentRecord(
                         candidate_id=pseudo,
                         pseudo_smiles=pseudo,
                         composition_view=comp_view,
                         measured_sty=float(measured_sty) if measured_sty > 0 else None,
+                        predicted_sty=predicted_sty,
                         measured_selectivity=float(measured_sel) if measured_sel > 0 else None,
+                        predicted_selectivity=predicted_selectivity,
+                        measured_yield=float(measured_yield) if measured_yield > 0 else None,
+                        predicted_yield=predicted_yield,
                         measured_stability_tos_h=float(measured_tos) if measured_tos > 0 else None,
                         conditions={"T_C": float(t_c), "P_bar": float(p_bar), "h2_co2": float(h2_co2)},
                         user=user.strip() or "anonymous",
@@ -921,8 +1129,12 @@ with tab_feedback:
                         {
                             "logged_at": r["logged_at"],
                             "composition": r["composition_view"],
+                            "predicted_sty": r.get("predicted_sty"),
                             "measured_sty": r["measured_sty"],
+                            "predicted_selectivity": r.get("predicted_selectivity"),
                             "measured_selectivity": r["measured_selectivity"],
+                            "predicted_yield": r.get("predicted_yield"),
+                            "measured_yield": r.get("measured_yield"),
                             "stability_h": r["measured_stability_tos_h"],
                             "user": r["user"],
                             "model_version": r["model_version"],
@@ -931,6 +1143,16 @@ with tab_feedback:
                     ]
                 )
                 st.dataframe(recent_df, use_container_width=True)
+
+                discrepancy_df = _feedback_discrepancy_frame(recent)
+                if not discrepancy_df.empty:
+                    st.markdown("**Prediction vs actual discrepancy analysis**")
+                    flagged = discrepancy_df[discrepancy_df["flags"] != "ok"].copy()
+                    if flagged.empty:
+                        st.success("No major discrepancies under current demo thresholds.")
+                    else:
+                        st.warning(f"{len(flagged)} feedback row(s) exceed discrepancy thresholds.")
+                    st.dataframe(discrepancy_df, use_container_width=True)
 
                 n_pending = feedback_store.count_since_last_train("current")
                 st.caption(

@@ -1,5 +1,5 @@
 {
-  "input_csv": "dataset/simulation/co2_methanol_sweep.csv",
+  "input_csv": "/Users/deveshi/catalyst_gen/dataset/simulation/co2_methanol_sweep.csv",
   "target": "simulated_sty_g_h_gcat",
   "n_rows": 3000,
   "n_train": 2250,

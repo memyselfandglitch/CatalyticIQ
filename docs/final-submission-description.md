@@ -1,11 +1,12 @@
 # CatalyticIQ — Round 2 Submission Description
 
-CatalyticIQ is an end-to-end CO2-to-methanol catalyst discovery loop. A reaction-conditioned generative VAE proposes novel catalyst compositions, three predictive heads on the latent space rank them on activity / selectivity / stability, a tiered reaction-energy module produces free-energy diagrams from heuristic / xTB / DFT estimates, and lab feedback feeds back into a versioned retrain. The Streamlit dashboard surfaces every step — discovery, pathway, compare, knowledge-base, validation, feedback — for a researcher to drive the loop from a single screen.
+CatalyticIQ is an end-to-end **chemical catalysis** prototype for CO2-to-methanol catalyst discovery. A reaction-conditioned generative VAE proposes novel catalyst compositions, the ActivityHead ranks them by predicted methanol productivity, a chemistry validation gate filters weak candidates, and a YAML-driven Cantera/thermodynamic layer generates simulation labels for validation and surrogate training. Lab feedback flows into a versioned retrain loop. The Streamlit dashboard surfaces every step — discovery, pathway, compare, knowledge-base, validation, feedback — for a researcher to drive the loop from a single screen.
 
 ## What we ship
 
-- **Generative model**: 30-epoch fine-tune of the reaction-conditioned CVAE on 1,946 CO2-to-methanol rows merged from TheMeCat and Suvarna. Validation loss 14.07 -> 0.43, 100% chemical validity.
+- **Generative model**: reaction-conditioned CVAE fine-tuned on 1,946 CO2-to-methanol rows merged from TheMeCat and Suvarna. Latest selected checkpoint: `dataset/co2_methanol/output_0_20260503_190505/`, best validation loss 4.2088, 100% validity in the latest generation run.
 - **Predictive heads**: latent-MLP `ActivityHead` (R^2 = 0.755, MAE 0.10 g MeOH / h / g_cat on a 196-row test split), `SelectivityHead` (joint MeOH / CO selectivity, R^2 = 0.43 on TheMeCat-only rows), `StabilityHead` (descriptor proxy from Tammann / Hüttig temperatures + redox class).
+- **Simulation surrogate**: 3,000 YAML-sweep CO2 validation rows generated from 15 shortlisted catalysts x 200 condition samples. Random Forest surrogate fit to simulation labels: test R^2 0.9945, test MAE 0.0038 g/h/g_cat.
 - **Reaction-energy module**: HCOO and RWGS pathway graphs with three pluggable backends (heuristic literature scaling, GFN2-xTB cluster, DFT / OCP IS2RE). The dashboard always labels the actual backend used.
 - **External knowledge base**: Materials Project adapter (mp-api with offline cache fallback), Open Catalyst Project adapter (fairchem with offline binding-energy seed), DuckDB cache with append-only provenance.
 - **Encoder validation suite**: held-out R^2 0.755 / 93% 90% interval coverage, latent-neighbour Jaccard 0.92, top-decile coherence 48%, active-learning recovery 8/20 in top-50, Pareto comparison vs random and GA baselines. Output: `encoder_report.pdf` + `encoder_report.json`.
@@ -26,7 +27,7 @@ CatalyticIQ is an end-to-end CO2-to-methanol catalyst discovery loop. A reaction
 
 - Tier B (xTB) and Tier C (DFT/OCP) are wired but degrade gracefully when their optional packages are absent. We label this in the UI rather than hide it.
 - Stability head is descriptor-based today — the residual MLP is parameterised but unused until TOS data arrives.
-- Stage B (syngas -> ethanol) and Stage C (ethanol -> jet) re-use the same pipeline with new dataset keys; they ship in the pilot phase.
+- Stage B (syngas -> ethanol) and Stage C (ethanol -> jet) re-use the same pipeline with new dataset keys, reaction-specific heads, and reaction-specific YAML simulation configs; they are pilot extensions, not required for the CO2 demo.
 - Direction 2 (synthetic biology) is reserved for a parallel `catcvae/protein_*` track once the SME lands.
 - Multi-user collaboration, lab-system integrations, and higher-fidelity Cantera/CatMAP/FairChem reactor validation are scoped for the pilot.
 

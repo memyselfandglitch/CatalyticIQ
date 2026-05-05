@@ -1,99 +1,143 @@
-# Round 2 Demo Script (7 minutes)
+# Round 2 Demo Script: CO2-to-Methanol Closed Loop
 
-This walkthrough drives the CatalyticIQ Streamlit dashboard end-to-end. Copy / paste the commands as given; the run timestamps used here are the ones committed in this prototype.
+This walkthrough keeps the demo focused on **Direction 1: Chemical Catalysis** for
+`CO2 + green H2 -> methanol`. Syngas-to-ethanol and ethanol-to-jet are mentioned
+only as pilot extensions.
 
-## 0. Pre-flight (offline, ~30 s)
+## 0. Pre-flight
+
+Refresh the committed artifacts:
 
 ```bash
-conda activate catalyticiq
-streamlit run app.py
+conda run -n catdrx python scripts/run_co2_demo.py --sweep-samples 200
 ```
 
-Open the dashboard URL printed by Streamlit. Sidebar:
-- **Run folder** = `output_0_20260428_212044` (the 30-epoch fine-tune)
-- **Generated candidates file** = the most-recent `generated_mol_*.csv`
+Launch the dashboard:
+
+```bash
+conda run --no-capture-output -n catdrx streamlit run app.py \
+  --server.port 8501 \
+  --server.address 127.0.0.1
+```
+
+Sidebar:
+
+- **Reaction** = `CO2 + H2 -> methanol`
+- **Run folder** = `output_0_20260503_190505`
 - **Top-N shortlist size** = 20
 - **Require metal-containing candidates** = on
 
-## 1. Discover (~90 s) — credible shortlist
+## 1. Discover: Generate And Rank
 
-Point at the **Discover** tab. Highlight:
+Show the closed-loop status panel:
 
-- Top three candidates: `Cu/K/ZnO`, `Cu/Pd/ZrO2`, `Cu/ZnO`. These are real CO2-to-methanol catalyst families straight out of the literature; the generative model has rediscovered them on its own.
-- Calibrated STY column (g MeOH / h / g cat) is rank-mapped against the training distribution — say "we don't claim absolute units, but the rank order is what drives synthesis decisions."
-- Selectivity prior and stability proxy are labelled as priors / proxies, not measurements.
-- 2D depictions render via RDKit for the top eight rows.
+- known catalyst baseline count from Materials Project/OCP cache
+- simulation validation rows
+- YAML sweep rows
+- simulation-surrogate test R2
 
-Click the **Activity R^2** card (top right): held-out 0.755 from `dataset/co2_methanol/property_heads/metrics.json`.
+Then show the top ranked candidates. Explain the ranking simply:
 
-## 2. Pathway (~75 s) — chemistry credibility
-
-Switch to **Pathway**. Default: HCOO mechanism, heuristic_scaling backend.
-
-- Walk through the six steps — `CO2(g) + 3H2(g) -> *HCOO -> *H2COO -> *H2COOH -> *H3CO -> CH3OH(g) + H2O(g)`.
-- For Cu/Zn-based candidates the rate-limiting step (~ -0.78 eV barrier on RWGS, mid-pathway dip on HCOO) matches Behrens et al. 2012.
-- Toggle to RWGS mechanism — note the deeper *CO+*O step.
-- Toggle backend to `xtb_topn` — the UI flags that xtb-python is not installed and the diagram stays at Tier A. Make the point: "we never lie about the backend."
-
-## 3. Compare (~60 s) — known + novel on one chart
-
-Switch to **Compare**. Show:
-
-- Pareto plot of activity vs selectivity prior, sized by stability proxy.
-- Materials Project entries (`mp-30 Cu`, `mp-2133 ZnO`, `mp-22598 In2O3`, etc.) appear in a different colour than the CatalyticIQ-novel candidates — the generative ones live next to their inspiration.
-
-## 4. Knowledge Base (~45 s) — retrieval is real
-
-Switch to **Knowledge Base**. Highlight:
-
-- Nine curated MP entries with formation energy, band gap, and role hints.
-- Probe Cu/Zn — four matching OCP binding energies (`*CO`, `*H`, `*OH`, `*HCOO`) come back from the cache with full citations.
-- Mention the cache is a single-file DuckDB — `cache/retrieval.duckdb`. mp-api / fairchem live calls happen automatically when keys / packages are present, otherwise we fall through to this cache.
-
-## 5. Validation (~75 s) — the encoder is doing real work
-
-Switch to **Validation**. Numbers to read out loud:
-
-- Held-out R^2 = 0.755, 90% interval coverage = 93% — the activity head is well calibrated.
-- Latent-neighbour Jaccard = 0.92 — the encoder strongly clusters by elemental composition.
-- Top-decile coherence = 48% — top STY catalysts have nearly half their nearest latent neighbours also in the top decile (chance is 10%).
-- Active-learning recovery: 8 / 20 of held-out top STY rows return in the top-50 of a freshly trained head.
-- Pareto bars: CVAE p95 beats random p95; GA wins on absolute extrapolation but is fed by the same activity head — point being the encoder *is* the prior that makes GA work.
-
-Download the PDF report so judges can take it offline.
-
-## 6. Feedback (~75 s) — the loop closes
-
-Switch to **Feedback**.
-
-- Pick `Cu/K/ZnO` from the dropdown.
-- Enter measured STY = `0.61`, MeOH selectivity = `82`, stability = `120`, T = `240`, P = `50`, H2/CO2 = `3.0`. User = `demo`. Notes = `Round-2 live demo`. Submit.
-- Show the row appearing in the **Recent experiments** table.
-- Drop into a terminal:
-
-```bash
-python scripts/retrain_with_feedback.py --mode heads --epochs 60 --promote
+```text
+CVAE generates candidates
+-> ActivityHead predicts methanol STY
+-> validation gate filters chemical relevance
+-> Cantera/thermo simulation and surrogate support final ranking
 ```
 
-Read the JSON output: new `version` id, `psi` 0.0 (not enough rows yet), `parent_test_r2` vs `new_test_r2`. Note the `model_versions` table now has the new entry with parent pointer and delta-R2.
+Say clearly that `raw_score` is the generation score, while
+`predicted_sty_g_h_gcat` is the ActivityHead-aligned productivity score.
 
-## 7. Wrap (~15 s)
+## 2. Knowledge Base: Known Catalyst Baseline
 
-> "CatalyticIQ already runs the loop the brief asks for: retrieve known catalysts, generate novel ones, rank them by activity / selectivity / stability, ground them in real reaction-energy diagrams, validate the encoder is actually doing work, and close the loop with versioned retrains. The architecture is ready for syngas->ethanol, ethanol->jet, and Direction 2 as soon as the data shows up."
+Open **Knowledge Base**.
 
-## Backup commands
+Show that the platform is not only a generator: it first retrieves or loads a
+known catalyst baseline from Materials Project/OCP cache. Live adapters activate
+when API keys and optional packages are available; the committed cache keeps the
+demo deterministic.
 
-If something goes sideways, these regenerate every artifact the dashboard reads:
+## 3. Validation: Simulation Layer
+
+Open **Validation**.
+
+Show:
+
+- `simulation_validation.csv`
+- backend: `yaml_cantera_plus_analytic_microkinetic`
+- equilibrium conversion
+- catalyst descriptor score
+- simulated STY
+
+Then show the sweep surrogate:
+
+- 3,000 rows from `15 candidates x 200 condition samples`
+- test R2 around `0.9945`
+- test MAE around `0.0038`
+
+Phrase this carefully:
+
+> The surrogate is validated against our simulation layer, not wet-lab data yet.
+> In a GPS pilot, internal experiments replace or augment these labels.
+
+## 4. Pathway: Reaction-Energy Diagram
+
+Open **Pathway**.
+
+Pick a high-ranked candidate and show HCOO vs RWGS. Keep the wording honest:
+
+- Tier A heuristic scaling is always available.
+- xTB / DFT tiers are optional and labelled by the actual backend used.
+- The diagram gives chemists mechanistic context before export.
+
+## 5. Compare: Known vs Novel
+
+Open **Compare**.
+
+Show the plot combining:
+
+- known catalysts from the knowledge base
+- generated CatalyticIQ candidates
+
+This satisfies the required flow:
+
+```text
+retrieve known catalysts -> generate novel candidates -> rank and compare
+```
+
+## 6. Feedback: Close The Loop
+
+Open **Feedback**.
+
+Show the import command:
 
 ```bash
-python scripts/prepare_co2_methanol_dataset.py \
-  --themecat dataset/raw/TheMeCat_v1.csv \
-  --suvarna dataset/raw/Suvarna_2022.xlsx \
-  --output dataset/co2_methanol.csv
-
-python scripts/postprocess_candidates.py \
-  --candidates dataset/co2_methanol/output_0_20260428_212044/generated_mol_lat_con_20260429_122817.csv
-
-python scripts/train_property_heads.py --pretrained_time 20260428_212044 --epochs 100
-python scripts/validate_encoder.py
+conda run -n catdrx python scripts/import_feedback_csv.py \
+  --input dataset/feedback/co2_methanol_lab_results_example.csv
 ```
+
+Then show the heads-only retraining command:
+
+```bash
+conda run -n catdrx python scripts/retrain_with_feedback.py \
+  --file co2_methanol \
+  --pretrained_time 20260503_190505 \
+  --mode heads
+```
+
+Explain:
+
+- small feedback batches update the ranking head first
+- full CVAE fine-tuning waits for enough validated rows and PSI drift checks
+- every experiment and model version is append-only and auditable
+
+## 7. Wrap
+
+Closing line:
+
+> CatalyticIQ implements the chemical catalysis loop requested in Theme 4:
+> known catalyst baseline, novel catalyst generation, predictive ranking,
+> thermodynamic/Cantera simulation validation, visual comparison, export, and
+> feedback-driven retraining. The demo is CO2-to-methanol today; the pilot path
+> extends the same backbone to syngas-to-ethanol and ethanol-to-jet as data
+> becomes available.

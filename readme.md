@@ -2,7 +2,7 @@
 
 CatalyticIQ is the Round 2 prototype for **Theme 4: AI Platform for Molecular Discovery in Chemical Catalysis and Synthetic Biology**, submitted by team CatalyticIQ for the GPS Renewables / IIT-D hackathon.
 
-It runs a closed end-to-end discovery loop for **CO2 + green H2 -> methanol**, with the architecture extensible to syngas->ethanol and ethanol->jet pilot stages.
+It runs a closed end-to-end discovery loop for **CO2 + green H2 -> methanol**. Syngas->ethanol and ethanol->jet are pilot extensions that reuse the same architecture with reaction-specific data, heads, and YAML configs.
 
 ## What the prototype does
 
@@ -43,6 +43,22 @@ researcher -> reaction
 
 ### How to test the current CO2 demo build
 
+One-command artifact refresh for the video demo:
+
+```bash
+conda run -n catdrx python scripts/run_co2_demo.py --sweep-samples 200
+```
+
+That command runs:
+
+```text
+postprocess generated candidates
+-> ActivityHead ranking
+-> thermodynamic/Cantera validation
+-> YAML-defined condition sweep
+-> simulation surrogate training
+```
+
 ```bash
 conda run -n catdrx python -m py_compile \
   app.py \
@@ -51,7 +67,9 @@ conda run -n catdrx python -m py_compile \
   scripts/postprocess_candidates.py \
   scripts/validate_shortlist_simulation.py \
   scripts/generate_cantera_sweep.py \
-  scripts/train_simulation_surrogate.py
+  scripts/train_simulation_surrogate.py \
+  scripts/run_co2_demo.py \
+  scripts/import_feedback_csv.py
 ```
 
 ```bash
@@ -87,6 +105,20 @@ conda run -n catdrx python scripts/train_simulation_surrogate.py \
   --output-dir dataset/simulation/surrogates/co2_methanol_smoke
 ```
 
+Import example lab feedback and run a heads-only retraining demo:
+
+```bash
+conda run -n catdrx python scripts/import_feedback_csv.py \
+  --input dataset/feedback/co2_methanol_lab_results_example.csv
+```
+
+```bash
+conda run -n catdrx python scripts/retrain_with_feedback.py \
+  --file co2_methanol \
+  --pretrained_time 20260503_190505 \
+  --mode heads
+```
+
 Launch the dashboard:
 
 ```bash
@@ -97,12 +129,12 @@ conda run --no-capture-output -n catdrx streamlit run app.py --server.port 8501 
 
 1. Regenerate validation PDF/JSON and enforce thresholds: `bash scripts/release_check_co2.sh`
 2. Criteria live in `config/release_criteria_co2.json` (edit min R² / MAE / coverage as needed).
-3. Syngas→ethanol: `python scripts/prepare_syngas_ethanol_dataset.py --input /path/to/source.csv` then `bash scripts/finetune_syngas_ethanol.sh`; property heads use `python scripts/train_property_heads.py --file syngas_ethanol --pretrained_time <ts>` and `python scripts/validate_encoder.py --dataset syngas_ethanol`.
+3. Pilot reaction extension: syngas->ethanol uses `python scripts/prepare_syngas_ethanol_dataset.py --input /path/to/source.csv` then `bash scripts/finetune_syngas_ethanol.sh`; keep the hackathon demo focused on CO2->methanol.
 
 ### Roadmap (post-Round 2 pilot)
 
-- Stage B: syngas -> ethanol (cleaned Zenodo 11639494 HAS data -> `dataset/syngas_ethanol.csv`; latest clean rerun `dataset/syngas_ethanol/output_0_20260505_172240/`).
-- Stage C: ethanol -> jet (GPS Renewables proprietary lab data).
+- Stage B: syngas -> ethanol (cleaned Zenodo 11639494 HAS data -> `dataset/syngas_ethanol.csv`; latest clean rerun `dataset/syngas_ethanol/output_0_20260505_172240/`). This is an extension, not the main demo.
+- Stage C: ethanol -> jet (GPS Renewables proprietary lab data). This should be piloted after internal data access.
 - Direction 2: synthetic biology track (BRENDA + ESM/AlphaFold).
 - Multi-user collaboration (auth, roles, per-user audit), full lab system integrations.
 - High-fidelity pilot simulation: Cantera mechanism refinement, CatMAP-style microkinetics, FairChem/OCP adsorption energies, and GPS-specific reactor models.
@@ -233,12 +265,26 @@ The dashboard reads everything in `dataset/co2_methanol/output_*`, `dataset/co2_
 
 ### 9. Feedback retrain (after lab results land)
 
+Import the example feedback CSV:
+
+```bash
+python scripts/import_feedback_csv.py \
+  --input dataset/feedback/co2_methanol_lab_results_example.csv
+```
+
 ```bash
 # Cheap heads-only refresh (default, safe for small N)
-python scripts/retrain_with_feedback.py --mode heads --epochs 80 --promote
+python scripts/retrain_with_feedback.py \
+  --file co2_methanol \
+  --pretrained_time 20260503_190505 \
+  --mode heads \
+  --epochs 80
 
 # Or schedule a full CVAE refit (refuses if PSI > 0.25 or N < 25 unless --force)
-python scripts/retrain_with_feedback.py --mode cvae
+python scripts/retrain_with_feedback.py \
+  --file co2_methanol \
+  --pretrained_time 20260503_190505 \
+  --mode cvae
 ```
 
 ## Documentation
