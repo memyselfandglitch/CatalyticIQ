@@ -170,7 +170,8 @@ OFFLINE_MP_SEED: list[KnownEntry] = [
 # Offline demo entries for syngas → ethanol (same MP phases as a placeholder
 # until reaction-specific curation lands).
 OFFLINE_MP_SYNGAS_SEED: list[KnownEntry] = [
-    dataclasses.replace(e, reaction="syngas_to_ethanol") for e in OFFLINE_MP_SEED
+    dataclasses.replace(e, identifier=f"{e.identifier}:syngas", reaction="syngas_to_ethanol")
+    for e in OFFLINE_MP_SEED
 ]
 
 
