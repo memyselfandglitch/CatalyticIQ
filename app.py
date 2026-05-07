@@ -152,6 +152,67 @@ def parse_generated_stats(path: Path) -> dict[str, Any]:
     return out
 
 
+def generation_stats_summary(stats: dict[str, Any]) -> pd.DataFrame:
+    """Convert raw CatDRX generation stats into judge-readable rows."""
+    if not stats:
+        return pd.DataFrame()
+
+    def _pair(key: str) -> tuple[float | None, float | None]:
+        value = stats.get(key)
+        if isinstance(value, list):
+            first = value[0] if len(value) > 0 else None
+            second = value[1] if len(value) > 1 else None
+            return first, second
+        if isinstance(value, (int, float)):
+            return value, None
+        return None, None
+
+    validity_n, validity_pct = _pair("Validity")
+    unique_n, unique_pct = _pair("Uniqueness")
+    novel_n, novel_pct_unique = _pair("Novelty")
+    intdiv_mean, intdiv_std = _pair("IntDiv")
+    snn_mean, snn_std = _pair("SNN")
+    fcd, _ = _pair("FCD")
+
+    rows = [
+        {
+            "metric": "Validity",
+            "value": f"{int(validity_n or 0):,} valid / {validity_pct:.1f}%" if validity_pct is not None else "N/A",
+            "what it means": "Generated strings that pass the syntax/chemistry parser.",
+        },
+        {
+            "metric": "Uniqueness",
+            "value": f"{int(unique_n or 0):,} unique / {unique_pct:.1f}% of generated" if unique_pct is not None else "N/A",
+            "what it means": "Deduplicated candidates after generation.",
+        },
+        {
+            "metric": "Novelty",
+            "value": (
+                f"{int(novel_n or 0):,} novel / {novel_pct_unique:.1f}% of unique"
+                if novel_pct_unique is not None
+                else "N/A"
+            ),
+            "what it means": "Unique candidates not found verbatim in the training corpus.",
+        },
+        {
+            "metric": "Internal diversity",
+            "value": f"{intdiv_mean:.3f} ± {intdiv_std:.3f}" if intdiv_mean is not None else "N/A",
+            "what it means": "How spread out the generated candidates are; higher is more diverse.",
+        },
+        {
+            "metric": "SNN",
+            "value": f"{snn_mean:.3f} ± {snn_std:.3f}" if snn_mean is not None else "N/A",
+            "what it means": "Similarity to nearest training examples; lower means less copy-like.",
+        },
+        {
+            "metric": "FCD",
+            "value": "not available for this pseudo-SMILES run" if pd.isna(fcd) else f"{fcd:.3f}",
+            "what it means": "Distribution-distance metric; skipped here because catalyst pseudo-SMILES are sparse.",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
 def parse_training_metrics(path: Path) -> pd.DataFrame:
     rows: list[dict[str, float]] = []
     pat = re.compile(
@@ -744,19 +805,35 @@ with tab_discover:
             c3.metric("Activity head R² (lit.)", f"{r2:.3f}" if r2 is not None else "N/A")
         else:
             c3.metric("Activity head R²", "N/A")
-        vtxt = stats.get("Validity", "—")
-        ntxt = stats.get("Novelty", "—")
+        _valid = stats.get("Validity")
+        _novel = stats.get("Novelty")
+        vtxt = (
+            f"{int(_valid[0]):,} valid / {_valid[1]:.1f}%"
+            if isinstance(_valid, list) and len(_valid) >= 2
+            else "N/A"
+        )
+        ntxt = (
+            f"{int(_novel[0]):,} novel / {_novel[1]:.1f}% of unique"
+            if isinstance(_novel, list) and len(_novel) >= 2
+            else "N/A"
+        )
         st.caption(f"Generation validity **{vtxt}** · novelty **{ntxt}** (see *Technical details* for charts).")
         with st.expander("Closed-loop demo status", expanded=True):
             d1, d2, d3, d4 = st.columns(4)
-            d1.metric("Known baseline", f"{len(load_known_catalysts(profile.retrieval_reaction))}")
-            d2.metric("Simulation rows", f"{len(simulation_df):,}" if not simulation_df.empty else "0")
+            d1.metric("Known catalyst baseline", f"{len(load_known_catalysts(profile.retrieval_reaction))}")
+            d2.metric("Validated shortlist rows", f"{len(simulation_df):,}" if not simulation_df.empty else "0")
             d3.metric(
-                "Sweep rows",
+                "Condition sweep rows",
                 f"{surrogate_metrics.get('n_rows', 0):,}" if surrogate_metrics else ("ready" if sweep_csv_path.exists() else "0"),
             )
             test_r2 = surrogate_metrics.get("test_r2") if surrogate_metrics else None
-            d4.metric("Surrogate test R²", f"{test_r2:.3f}" if test_r2 is not None else "N/A")
+            d4.metric("Simulation surrogate R²", f"{test_r2:.3f}" if test_r2 is not None else "N/A")
+            st.caption(
+                "Baseline = retrieved/offline known catalyst entries. Validated shortlist = generated candidates "
+                "passed through the thermodynamic + descriptor simulation layer. Condition sweep = synthetic reactor "
+                "conditions used to train the fast simulation surrogate; its R² measures fit to simulation labels, "
+                "not wet-lab accuracy."
+            )
     else:
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Generated", f"{len(raw_candidates):,}")
@@ -780,9 +857,9 @@ with tab_discover:
     else:
         if clean_ranked_by_activity_head:
             st.caption(
-                f"Ranking: CVAE generates candidates -> ActivityHead predicts methanol STY "
-                f"(μ from CVAE; median T/P from `{_train_csv_rel}`) -> validation gate -> "
-                "simulation/surrogate validation before export. `raw_score` = generation NN."
+                "Ranking flow: CVAE proposes catalyst compositions -> ActivityHead predicts methanol productivity "
+                f"from the frozen CVAE latent vector -> chemistry gate checks catalyst relevance -> "
+                "simulation validation estimates thermodynamic feasibility before export."
             )
         else:
             st.caption(
@@ -811,7 +888,30 @@ with tab_discover:
         ):
             if col in clean_df.columns:
                 display_cols.append(col)
-        st.dataframe(clean_df[display_cols], use_container_width=True)
+        display_cols = [c for c in display_cols if c in clean_df.columns]
+        column_labels = {
+            "composition_view": "candidate",
+            "predicted_sty_g_h_gcat": "predicted STY",
+            "validation_tier": "gate tier",
+            "validation_score": "gate score",
+            "selectivity_proxy_pct": "selectivity prior",
+            "stability_proxy": "stability descriptor",
+            "pseudo_smiles": "pseudo-SMILES",
+            "n_components": "components",
+            "matched_methanol_family": "matched family",
+            "equilibrium_conversion_pct": "eq. conversion %",
+            "catalyst_rate_score": "catalyst rate score",
+            "simulated_sty_g_h_gcat": "simulated STY",
+            "simulation_confidence": "simulation confidence",
+        }
+        st.dataframe(
+            clean_df[display_cols].rename(columns=column_labels),
+            use_container_width=True,
+        )
+        st.caption(
+            "For the demo, focus on predicted STY, gate tier/score, simulated STY, and simulation confidence. "
+            "Selectivity and stability are descriptor priors until real lab labels are logged."
+        )
 
         st.markdown("**Top candidate RDKit composition graphs**")
         n_show = min(8, len(clean_df))
@@ -845,9 +945,16 @@ with tab_discover:
         else:
             st.bar_chart(elements_df.set_index("element")["count"].head(15))
 
-        st.subheader("Generation metrics (raw)")
-        if stats:
-            st.json(stats)
+        st.subheader("Generation metrics")
+        summary_df = generation_stats_summary(stats)
+        if not summary_df.empty:
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            with st.expander("Raw generation stats file", expanded=False):
+                st.caption(
+                    "`*_2` keys are confirmation ratios written by the original CatDRX generator "
+                    "(for example 0.22 = 22%). The table above is the judge-facing version."
+                )
+                st.json(stats)
         else:
             st.info("No generation_stats_*.txt found for this run.")
 
@@ -921,6 +1028,10 @@ with tab_pathway:
         chosen_smiles = clean_df.iloc[choice_idx]["pseudo_smiles"]
         energy_profile = compute_energy_profile(chosen_smiles, mechanism, backend)
         st.caption(f"Backend used: **{energy_profile['backend']}**. {energy_profile['citation']}")
+        st.caption(
+            "This diagram is a mechanism-level descriptor view for CO2-to-methanol, not a full reactor simulation. "
+            "For each candidate, the graph is computed from composition-weighted adsorption/binding descriptors."
+        )
         st.image(render_energy_diagram(energy_profile), use_container_width=True)
         if energy_profile["notes"]:
             st.info(energy_profile["notes"])
@@ -975,8 +1086,9 @@ with tab_compare:
             use_container_width=True,
         )
         st.caption(
-            "Bubble size ≈ stability proxy (descriptor). Selectivity ≈ composition prior "
-            + ("(methanol-oriented placeholder for this reaction)." if profile.id != "co2_methanol" else "(TheMeCat-style prior).")
+            "Use this as a prioritisation map, not final truth: y-axis is ActivityHead STY; x-axis is a composition "
+            "selectivity prior; bubble size is a descriptor-based stability prior. Logged lab feedback replaces "
+            "these priors over time."
         )
         st.dataframe(combined.sort_values("predicted_sty_g_h_gcat", ascending=False).head(20), use_container_width=True)
 
@@ -988,15 +1100,22 @@ with tab_kb:
     if not known:
         st.info("Knowledge base is empty.")
     else:
-        st.caption(f"{len(known)} entries (MP + OCP cache when offline).")
+        st.caption(
+            f"{len(known)} entries from the offline Materials Project/OCP-style seed cache. "
+            "These are baseline priors for demo retrieval; live API adapters are the pilot path."
+        )
         known_df = pd.DataFrame(known)
         if "composition" in known_df.columns:
             known_df["composition"] = known_df["composition"].apply(lambda xs: "/".join(xs))
         st.dataframe(known_df, use_container_width=True)
 
-        _ocp_title = "Optional: OCP binding lookup"
+        _ocp_title = "Optional: qualitative OCP adsorption lookup"
         if simple_ui:
             with st.expander(_ocp_title, expanded=False):
+                st.caption(
+                    "Offline seed of representative adsorbate binding energies. Treat citations as source-family "
+                    "labels, not paper-grade references."
+                )
                 comp_pick = st.text_input("Composition (e.g. Cu/Zn)", value="Cu/Zn", key="ocp_probe_tab")
                 if comp_pick.strip():
                     symbols = tuple(s.strip() for s in comp_pick.split("/") if s.strip())
@@ -1007,6 +1126,10 @@ with tab_kb:
                         st.info(f"No OCP entries for {'/'.join(symbols)}.")
         else:
             st.markdown(f"**{_ocp_title}**")
+            st.caption(
+                "Offline seed of representative adsorbate binding energies. Treat citations as source-family "
+                "labels, not paper-grade references."
+            )
             comp_pick = st.text_input(
                 "Probe OCP binding energies for composition (slash-separated, e.g. Cu/Zn)",
                 value="Cu/Zn",
@@ -1048,6 +1171,11 @@ with tab_validation:
             else "N/A",
         )
         st.dataframe(simulation_df.head(30), use_container_width=True)
+        st.caption(
+            "Equilibrium conversion is the thermodynamic CO2 conversion predicted at the selected T/P/feed before "
+            "lab calibration. Cantera-backed rows mean Cantera successfully cross-checked gas equilibrium; the "
+            "catalyst-specific part still comes from the YAML descriptor screen."
+        )
 
     st.subheader("Sweep surrogate")
     if not surrogate_metrics:
@@ -1058,6 +1186,10 @@ with tab_validation:
         sm2.metric("Train rows", f"{surrogate_metrics.get('n_train', 0):,}")
         sm3.metric("Test R²", f"{surrogate_metrics.get('test_r2', float('nan')):.3f}")
         sm4.metric("Test MAE", f"{surrogate_metrics.get('test_mae', float('nan')):.4f}")
+        st.caption(
+            "The surrogate is a fast regressor trained on generated simulation-sweep labels. High R² here means it "
+            "reproduces the simulation layer well; it is not a claim of wet-lab accuracy."
+        )
         with st.expander("Surrogate metrics JSON", expanded=not simple_ui):
             st.json(surrogate_metrics)
 
@@ -1106,6 +1238,10 @@ with tab_validation:
                 ]
             )
             st.markdown("Pareto-style comparison (toy baselines)")
+            st.caption(
+                "Optional technical slide only: this compares the encoder/ranking distribution against random and "
+                "small-GA baselines. Skip it in the main video unless judges ask how the latent ranking was checked."
+            )
             st.bar_chart(pareto_df.set_index("source"))
             st.json(report)
 

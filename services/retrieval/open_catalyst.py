@@ -20,33 +20,33 @@ from .cache import RetrievalCache
 logger = logging.getLogger(__name__)
 
 
-# Curated offline binding-energy seed (eV). Values are rounded medians from
-# OCP IS2RE leaderboards / public DFT scaling-relations literature.
+# Curated offline binding-energy seed (eV). Values are qualitative demo priors
+# drawn from OCP/DFT scaling-relation ranges, not exact citation-grade records.
 OFFLINE_OCP_SEED: list[dict] = [
     # *CO on close-packed surfaces
-    {"identifier": "ocp:Cu(111):*CO",   "composition": ["Cu"],            "adsorbate": "*CO",   "binding_energy_ev": -0.50, "surface_termination": "(111)", "citation": "OCP IS2RE / Norskov et al."},
-    {"identifier": "ocp:Pd(111):*CO",   "composition": ["Pd"],            "adsorbate": "*CO",   "binding_energy_ev": -1.45, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:Pt(111):*CO",   "composition": ["Pt"],            "adsorbate": "*CO",   "binding_energy_ev": -1.55, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:Rh(111):*CO",   "composition": ["Rh"],            "adsorbate": "*CO",   "binding_energy_ev": -1.85, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:Ni(111):*CO",   "composition": ["Ni"],            "adsorbate": "*CO",   "binding_energy_ev": -1.65, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:CuZn(111):*CO", "composition": ["Cu", "Zn"],      "adsorbate": "*CO",   "binding_energy_ev": -0.65, "surface_termination": "(111)", "citation": "OCP IS2RE / Behrens et al."},
-    {"identifier": "ocp:PdZn(101):*CO", "composition": ["Pd", "Zn"],      "adsorbate": "*CO",   "binding_energy_ev": -1.10, "surface_termination": "(101)", "citation": "OCP IS2RE"},
+    {"identifier": "ocp:Cu(111):*CO",   "composition": ["Cu"],            "adsorbate": "*CO",   "binding_energy_ev": -0.50, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:Pd(111):*CO",   "composition": ["Pd"],            "adsorbate": "*CO",   "binding_energy_ev": -1.45, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:Pt(111):*CO",   "composition": ["Pt"],            "adsorbate": "*CO",   "binding_energy_ev": -1.55, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:Rh(111):*CO",   "composition": ["Rh"],            "adsorbate": "*CO",   "binding_energy_ev": -1.85, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:Ni(111):*CO",   "composition": ["Ni"],            "adsorbate": "*CO",   "binding_energy_ev": -1.65, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:CuZn(111):*CO", "composition": ["Cu", "Zn"],      "adsorbate": "*CO",   "binding_energy_ev": -0.65, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:PdZn(101):*CO", "composition": ["Pd", "Zn"],      "adsorbate": "*CO",   "binding_energy_ev": -1.10, "surface_termination": "(101)", "citation": "offline OCP/DFT descriptor seed"},
 
     # *H
-    {"identifier": "ocp:Cu(111):*H",    "composition": ["Cu"],            "adsorbate": "*H",    "binding_energy_ev": -0.30, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:Pd(111):*H",    "composition": ["Pd"],            "adsorbate": "*H",    "binding_energy_ev": -0.55, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:CuZn(111):*H",  "composition": ["Cu", "Zn"],      "adsorbate": "*H",    "binding_energy_ev": -0.35, "surface_termination": "(111)", "citation": "OCP IS2RE"},
+    {"identifier": "ocp:Cu(111):*H",    "composition": ["Cu"],            "adsorbate": "*H",    "binding_energy_ev": -0.30, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:Pd(111):*H",    "composition": ["Pd"],            "adsorbate": "*H",    "binding_energy_ev": -0.55, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:CuZn(111):*H",  "composition": ["Cu", "Zn"],      "adsorbate": "*H",    "binding_energy_ev": -0.35, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
 
     # *OH
-    {"identifier": "ocp:Cu(111):*OH",   "composition": ["Cu"],            "adsorbate": "*OH",   "binding_energy_ev": -3.20, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:CuZn(111):*OH", "composition": ["Cu", "Zn"],      "adsorbate": "*OH",   "binding_energy_ev": -3.10, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:CuZr(111):*OH", "composition": ["Cu", "Zr"],      "adsorbate": "*OH",   "binding_energy_ev": -3.30, "surface_termination": "(111)", "citation": "OCP IS2RE"},
+    {"identifier": "ocp:Cu(111):*OH",   "composition": ["Cu"],            "adsorbate": "*OH",   "binding_energy_ev": -3.20, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:CuZn(111):*OH", "composition": ["Cu", "Zn"],      "adsorbate": "*OH",   "binding_energy_ev": -3.10, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:CuZr(111):*OH", "composition": ["Cu", "Zr"],      "adsorbate": "*OH",   "binding_energy_ev": -3.30, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
 
     # *HCOO
-    {"identifier": "ocp:Cu(111):*HCOO", "composition": ["Cu"],            "adsorbate": "*HCOO", "binding_energy_ev": -2.40, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:CuZn(111):*HCOO", "composition": ["Cu", "Zn"],   "adsorbate": "*HCOO", "binding_energy_ev": -2.30, "surface_termination": "(111)", "citation": "OCP IS2RE / Studt et al."},
-    {"identifier": "ocp:CuZr(111):*HCOO", "composition": ["Cu", "Zr"],   "adsorbate": "*HCOO", "binding_energy_ev": -2.50, "surface_termination": "(111)", "citation": "OCP IS2RE"},
-    {"identifier": "ocp:In2O3(110):*HCOO", "composition": ["In", "O"],   "adsorbate": "*HCOO", "binding_energy_ev": -2.55, "surface_termination": "(110)", "citation": "OCP IS2RE / Frei et al."},
+    {"identifier": "ocp:Cu(111):*HCOO", "composition": ["Cu"],            "adsorbate": "*HCOO", "binding_energy_ev": -2.40, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:CuZn(111):*HCOO", "composition": ["Cu", "Zn"],   "adsorbate": "*HCOO", "binding_energy_ev": -2.30, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:CuZr(111):*HCOO", "composition": ["Cu", "Zr"],   "adsorbate": "*HCOO", "binding_energy_ev": -2.50, "surface_termination": "(111)", "citation": "offline OCP/DFT descriptor seed"},
+    {"identifier": "ocp:In2O3(110):*HCOO", "composition": ["In", "O"],   "adsorbate": "*HCOO", "binding_energy_ev": -2.55, "surface_termination": "(110)", "citation": "offline OCP/DFT descriptor seed"},
 ]
 
 
