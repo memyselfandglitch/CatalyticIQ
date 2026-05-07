@@ -291,18 +291,3 @@ python scripts/retrain_with_feedback.py \
   --mode cvae
 ```
 
-## Documentation
-
-- [Round 1 written submission](docs/theme4-round1-solution.md)
-- [Final submission description](docs/final-submission-description.md)
-- [Round 2 demo script](docs/round2-demo-script.md)
-- [Simulation validation architecture](docs/simulation-validation-architecture.md)
-- [Build and positioning playbook](docs/build-and-positioning-playbook.md)
-
-## Dashboard preview
-
-![CatalyticIQ dashboard overview](docs/assets/dashboard-overview.png)
-
-![CatalyticIQ training trends](docs/assets/dashboard-training-trends.png)
-
-![CatalyticIQ metrics and element frequency](docs/assets/dashboard-metrics-frequency.png)
