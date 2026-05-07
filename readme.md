@@ -299,6 +299,15 @@ python scripts/import_feedback_csv.py \
   --input dataset/feedback/co2_methanol_lab_results_example.csv
 ```
 
+Prepare/update property-head artifacts required by feedback retrain
+(`dataset/co2_methanol/property_heads/embeddings.npz`):
+
+```bash
+python scripts/train_property_heads.py \
+  --pretrained_time 20260503_190505 \
+  --epochs 20
+```
+
 ```bash
 # Cheap heads-only refresh (default, safe for small N)
 python scripts/retrain_with_feedback.py \
@@ -313,4 +322,3 @@ python scripts/retrain_with_feedback.py \
   --pretrained_time 20260503_190505 \
   --mode cvae
 ```
-

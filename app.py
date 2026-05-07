@@ -730,6 +730,11 @@ _feedback_import_cmd = (
     f"conda run -n {CONDA_ENV} python scripts/import_feedback_csv.py \\\n"
     "  --input dataset/feedback/co2_methanol_lab_results_example.csv"
 )
+_feedback_heads_prep_cmd = (
+    f"conda run -n {CONDA_ENV} python scripts/train_property_heads.py \\\n"
+    "  --pretrained_time 20260503_190505 \\\n"
+    "  --epochs 100"
+)
 _feedback_retrain_cmd = (
     f"conda run -n {CONDA_ENV} python scripts/retrain_with_feedback.py \\\n"
     f"  --file {profile.id} \\\n"
@@ -751,8 +756,12 @@ with st.sidebar.expander("Train simulation surrogate"):
     st.code(_sweep_cmd, language="bash")
     st.code(_surrogate_cmd, language="bash")
 with st.sidebar.expander("Feedback/retraining demo"):
-    st.caption("Imports example lab outcomes, then retrains the ranking head. Full CVAE retrain waits for more rows.")
+    st.caption(
+        "Imports example lab outcomes, refreshes property-head artifacts, then retrains the ranking head. "
+        "Full CVAE retrain waits for more rows."
+    )
     st.code(_feedback_import_cmd, language="bash")
+    st.code(_feedback_heads_prep_cmd, language="bash")
     st.code(_feedback_retrain_cmd, language="bash")
 
 
@@ -1294,11 +1303,13 @@ with tab_feedback:
 
     if feedback_store is not None:
         st.info(
-            "Demo loop: import example outcomes -> retrain the ActivityHead ranking model. "
+            "Demo loop: import example outcomes -> refresh property-head artifacts -> "
+            "retrain the ActivityHead ranking model. "
             "Full CVAE fine-tuning is triggered only after enough validated lab rows pass drift checks."
         )
         with st.expander("Feedback import and retraining commands", expanded=True):
             st.code(_feedback_import_cmd, language="bash")
+            st.code(_feedback_heads_prep_cmd, language="bash")
             st.code(_feedback_retrain_cmd, language="bash")
             example_path = ROOT / "dataset" / "feedback" / "co2_methanol_lab_results_example.csv"
             if example_path.exists():
