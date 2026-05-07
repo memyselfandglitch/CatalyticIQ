@@ -47,6 +47,20 @@ PROFILES: tuple[ReactionProfile, ...] = (
         ),
         public_demo=False,
     ),
+    ReactionProfile(
+        id="ethanol_to_hydrocarbons",
+        label="Ethanol → hydrocarbons / jet-range (pilot)",
+        dataset_subdir="ethanol_to_hydrocarbons",
+        retrieval_reaction="ethanol_to_hydrocarbons",
+        full_csv_relative="dataset/ethanol_to_hydrocarbons_full.csv",
+        reaction_config_relative="config/reactions/ethanol_to_hydrocarbons.yaml",
+        caption=(
+            "Pilot track for GPS Renewables ethanol-upgrading chemistry. This profile is registered "
+            "for architecture planning; it needs reaction-specific data and generated artifacts before "
+            "it becomes a public demo."
+        ),
+        public_demo=False,
+    ),
 )
 
 _BY_ID = {p.id: p for p in PROFILES}
@@ -68,15 +82,13 @@ def has_output_runs(profile: ReactionProfile) -> bool:
 
 
 def list_profiles_for_ui() -> list[ReactionProfile]:
-    """Public dashboard profiles.
+    """Dashboard profiles.
 
-    The hackathon dashboard is intentionally CO2-focused. Pilot reactions remain
-    registered for code reuse, but are hidden unless explicitly enabled with
-    ``CATALYTICIQ_SHOW_PILOTS=1``.
+    CO2-to-methanol is the complete public demo. Pilot reactions are visible in
+    the dropdown so the architecture breadth is clear, but the app marks them as
+    incomplete until reaction-specific generated artifacts exist.
     """
-    show_pilots = os.environ.get("CATALYTICIQ_SHOW_PILOTS", "").lower() in {"1", "true", "yes"}
-    return [
-        profile
-        for profile in PROFILES
-        if profile.public_demo or (show_pilots and has_output_runs(profile))
-    ]
+    hide_pilots = os.environ.get("CATALYTICIQ_HIDE_PILOTS", "").lower() in {"1", "true", "yes"}
+    if hide_pilots:
+        return [profile for profile in PROFILES if profile.public_demo]
+    return list(PROFILES)

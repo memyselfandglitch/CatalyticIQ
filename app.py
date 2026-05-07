@@ -601,7 +601,42 @@ if not simple_ui:
 
 runs = discover_output_runs(DATASET_DIR)
 if not runs:
-    st.error(f"No output runs found under {DATASET_DIR}. Fine-tune the CVAE for this reaction first.")
+    st.warning(f"{profile.label} is registered as a pilot reaction, but no generated demo run exists yet.")
+    st.caption(profile.caption)
+    st.markdown("**What exists for this reaction profile**")
+    status_rows = [
+        {
+            "asset": "Reaction YAML",
+            "path": profile.reaction_config_relative,
+            "status": "present" if (ROOT / profile.reaction_config_relative).exists() else "missing",
+        },
+        {
+            "asset": "Cleaned dataset",
+            "path": f"dataset/{profile.dataset_subdir}.csv",
+            "status": "present" if (ROOT / "dataset" / f"{profile.dataset_subdir}.csv").exists() else "missing",
+        },
+        {
+            "asset": "Full training CSV",
+            "path": profile.full_csv_relative,
+            "status": "present" if (ROOT / profile.full_csv_relative).exists() else "missing",
+        },
+        {
+            "asset": "Generated output_* run",
+            "path": f"dataset/{profile.dataset_subdir}/output_*",
+            "status": "missing",
+        },
+    ]
+    st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
+    st.info(
+        "The shipped hackathon demo is CO2-to-methanol. This pilot profile shows the intended "
+        "multi-reaction architecture, but it needs a reaction-specific CVAE run, property heads, "
+        "and simulation validation artifacts before the full dashboard can render."
+    )
+    st.code(
+        f"conda run -n {CONDA_ENV} python scripts/run_co2_demo.py --sweep-samples 200\n"
+        "# For this pilot, first add/promote an equivalent reaction-specific generation pipeline.",
+        language="bash",
+    )
     st.stop()
 
 run_map = {p.name: p for p in runs}
