@@ -164,16 +164,39 @@ python scripts/prepare_co2_methanol_dataset.py \
   --output dataset/co2_methanol.csv
 ```
 
+This step requires local raw source files at `dataset/raw/TheMeCat_v1.csv` and
+`dataset/raw/Suvarna_2022.xlsx` (or CSV). If those files are not available in
+your clone, skip this step and use the prebuilt `dataset/co2_methanol.csv` and
+`dataset/co2_methanol_full.csv` already committed in the repo.
+
 This emits both `dataset/co2_methanol.csv` (legacy schema for the CVAE) and `dataset/co2_methanol_full.csv` (with selectivity / conversion / yield columns).
 
 ### 3. Fine-tune the CVAE
+
+Download the ORD pretrained checkpoint from Box and place it under:
+`dataset/ord/output_0_ord_pretrained_aug5/`
+
+Box link:
+`https://science-tokyo.app.box.com/s/9lx7hiv8tjggvpst20h8jr8ju61v5vtn`
+
+Expected files in that folder before fine-tuning:
+
+- `dataset/ord/output_0_ord_pretrained_aug5/model_ae.pth`
+- `dataset/ord/output_0_ord_pretrained_aug5/model_nn.pth`
+
+If you already downloaded the checkpoint to `~/Downloads`, copy it with:
+
+```bash
+mkdir -p dataset/ord/output_0_ord_pretrained_aug5
+cp ~/Downloads/<checkpoint_folder_or_files>/* dataset/ord/output_0_ord_pretrained_aug5/
+```
 
 ```bash
 python main_finetune.py \
   --file co2_methanol \
   --pretrained_file ord \
   --pretrained_time ord_pretrained_aug5 \
-  --epochs 30 --lr 0.0005 --class_weight enabled
+  --epochs 8 --lr 0.0005 --class_weight enabled
 ```
 
 ### 4. Generate candidates
