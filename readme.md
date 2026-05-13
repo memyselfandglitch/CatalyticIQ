@@ -20,7 +20,7 @@ researcher -> reaction
 ### Implemented in this prototype
 
 - **CO2->methanol data pipeline**: TheMeCat + Suvarna -> `dataset/co2_methanol.csv` (legacy) and `dataset/co2_methanol_full.csv` (with MeOH selectivity / CO2 conversion / yield columns).
-- **Reaction-conditioned generative VAE**, initialized from the local ORD pretrained checkpoint (`dataset/ord/output_0_ord_pretrained_aug5/`) and fine-tuned for CO2->methanol (`dataset/co2_methanol/output_0_20260503_190505/`, best validation loss 4.2088, 100% validity in the latest run).
+- **Reaction-conditioned generative VAE**, initialized from the local ORD pretrained checkpoint (`dataset/ord/output_0_ord_pretrained_aug5/`) and fine-tuned for CO2->methanol. The default demo / feedback run is `dataset/co2_methanol/output_0_20260507_173839/` (keep `model_ae.pth` in that folder; see `report.txt` / `loss.txt` there for training metrics).
 - **Post-processing**: dedup, support-to-oxide mapping, score calibration (`scripts/postprocess_candidates.py`).
 - **Multi-property prediction**:
   - `ActivityHead` MLP on the latent embedding (R^2 = 0.755, MAE = 0.10 g/h/g_cat).
@@ -74,9 +74,9 @@ conda run -n catalyticiq python -m py_compile \
 
 ```bash
 conda run -n catalyticiq python scripts/validate_shortlist_simulation.py \
-  --candidates dataset/co2_methanol/output_0_20260503_190505/generated_candidates_clean.csv \
+  --candidates dataset/co2_methanol/output_0_20260507_173839/generated_candidates_clean.csv \
   --reaction-config config/reactions/co2_methanol.yaml \
-  --output dataset/co2_methanol/output_0_20260503_190505/simulation_validation.csv
+  --output dataset/co2_methanol/output_0_20260507_173839/simulation_validation.csv
 ```
 
 Expected backend in `simulation_validation.csv`:
@@ -90,7 +90,7 @@ Generate a smoke simulation sweep from the YAML ranges:
 ```bash
 conda run -n catalyticiq python scripts/generate_cantera_sweep.py \
   --reaction-config config/reactions/co2_methanol.yaml \
-  --candidates dataset/co2_methanol/output_0_20260503_190505/generated_candidates_clean.csv \
+  --candidates dataset/co2_methanol/output_0_20260507_173839/generated_candidates_clean.csv \
   --output dataset/simulation/co2_methanol_sweep_smoke.csv \
   --n-samples 3 \
   --limit-candidates 3
@@ -115,7 +115,7 @@ conda run -n catalyticiq python scripts/import_feedback_csv.py \
 ```bash
 conda run -n catalyticiq python scripts/retrain_with_feedback.py \
   --file co2_methanol \
-  --pretrained_time 20260503_190505 \
+  --pretrained_time 20260507_173839 \
   --mode heads
 ```
 
@@ -208,6 +208,8 @@ python generation.py \
   --pretrained_time <timestamp> \
   --correction enabled --from_around_mol enabled
 ```
+
+Optional: add `--n_samples 400` (or any positive integer) for a faster loop; default is **1000** valid decoded rows (same model, smaller pool). The Streamlit **Generate + rank** control passes `--n_samples` from `CATALYTICIQ_GENERATION_N_SAMPLES` when set; otherwise it defaults to **250** for a responsive UI (raise to 400–1000 for a larger pool).
 
 ### 5. Post-process generation
 
@@ -304,7 +306,7 @@ Prepare/update property-head artifacts required by feedback retrain
 
 ```bash
 python scripts/train_property_heads.py \
-  --pretrained_time 20260503_190505 \
+  --pretrained_time 20260507_173839 \
   --epochs 20
 ```
 
@@ -312,13 +314,13 @@ python scripts/train_property_heads.py \
 # Cheap heads-only refresh (default, safe for small N)
 python scripts/retrain_with_feedback.py \
   --file co2_methanol \
-  --pretrained_time 20260503_190505 \
+  --pretrained_time 20260507_173839 \
   --mode heads \
   --epochs 80
 
 # Or schedule a full CVAE refit (refuses if PSI > 0.25 or N < 25 unless --force)
 python scripts/retrain_with_feedback.py \
   --file co2_methanol \
-  --pretrained_time 20260503_190505 \
+  --pretrained_time 20260507_173839 \
   --mode cvae
 ```

@@ -58,6 +58,7 @@ class ModelArgumentParser:
         self.parser.add_argument('--from_around_mol_cond', type=str, default='enabled', choices=['enabled', 'disabled'])
         self.parser.add_argument('--from_training_space', type=str, default='None', choices=['enabled', 'disabled'])
         self.parser.add_argument('--from_guide', type=str, default='None') # no use for now
+        self.parser.add_argument('--n_samples', type=int, default=1000, help='Number of molecules to sample during generation.')
         # optimization
         self.parser.add_argument('--opt_strategy', type=str, default='at_random', choices=['at_random', 'around_target'])
 

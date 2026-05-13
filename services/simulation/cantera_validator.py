@@ -9,9 +9,45 @@ from typing import Any, Sequence
 
 import pandas as pd
 
-from .reaction_config import ReactionConfig, load_reaction_config
+from .reaction_config import ROOT, ReactionConfig, load_reaction_config
 
 R_J_MOL_K = 8.31446261815324
+
+
+def _normalize_feed_mole_fractions(feed: dict[str, float]) -> dict[str, float]:
+    """Cantera TPX expects positive mole fractions that sum to ~1."""
+    out = {str(k): max(0.0, float(v)) for k, v in feed.items() if float(v) > 0.0}
+    s = sum(out.values())
+    if s <= 0.0:
+        return {str(k): float(v) for k, v in feed.items()}
+    return {k: v / s for k, v in out.items()}
+
+
+def _resolve_cantera_mechanism_path(config: ReactionConfig) -> str:
+    """Resolve gri30.yaml etc.: cwd, next to reaction YAML, repo config, then Cantera data dir."""
+    name = (config.cantera_mechanism or "").strip()
+    if not name:
+        return name
+    p = Path(name)
+    if p.is_file():
+        return str(p.resolve())
+    beside_yaml = (config.path.parent / name).resolve()
+    if beside_yaml.is_file():
+        return str(beside_yaml)
+    repo_cfg = (ROOT / "config" / "reactions" / name).resolve()
+    if repo_cfg.is_file():
+        return str(repo_cfg)
+    try:
+        import cantera as ct
+
+        get_dd = getattr(ct, "get_data_directory", None)
+        if callable(get_dd):
+            cand = Path(get_dd()) / name
+            if cand.is_file():
+                return str(cand)
+    except Exception:
+        pass
+    return name
 
 
 @dataclass(frozen=True)
@@ -120,14 +156,20 @@ def cantera_equilibrium_conversion(
         return None
 
     try:
-        gas = ct.Solution(config.cantera_mechanism)
+        mech = _resolve_cantera_mechanism_path(config)
+        if not mech:
+            return None
+        gas = ct.Solution(mech)
         required = set(config.required_species)
         if not required.issubset(set(gas.species_names)):
             return None
-        gas.TPX = temperature_c + 273.15, pressure_bar * 1e5, config.feed
+        feed = _normalize_feed_mole_fractions(dict(config.feed))
+        gas.TPX = temperature_c + 273.15, pressure_bar * 1e5, feed
         gas.equilibrate("TP")
         ref = config.reference_species
-        ref_in = config.feed.get(ref, 0.0) / max(sum(config.feed.values()), 1e-30)
+        ref_in = feed.get(ref, 0.0)
+        if ref_in <= 0.0:
+            return None
         ref_out = gas[ref].X[0]
         return max(0.0, min(1.0, 1.0 - ref_out / max(ref_in, 1e-30)))
     except Exception:

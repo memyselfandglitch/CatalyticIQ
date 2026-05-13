@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--file", default="co2_methanol", help="Dataset key in dataset/_dataset.py.")
     p.add_argument(
         "--pretrained_time",
-        default="20260428_212044",
+        default="20260507_173839",
         help="Timestamp suffix of the CVAE run under dataset/<file>/output_0_<ts>/.",
     )
     p.add_argument(
@@ -78,13 +78,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epochs", type=int, default=120)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--feedback_weight",
+        type=int,
+        default=3,
+        help="Repeat each measured feedback row this many times in heads-mode training.",
+    )
     p.add_argument("--psi_threshold", type=float, default=0.25)
     p.add_argument("--min_full_n", type=int, default=25, help="Minimum feedback rows for full CVAE retrain.")
     p.add_argument("--force", action="store_true", help="Bypass drift / N safeguards.")
     p.add_argument(
         "--promote",
         action="store_true",
-        help="If set, the new heads-mode artifact replaces head_activity.pth (a .bak is kept).",
+        help="If set, replace head_activity.pth only when held-out R2 does not regress unless --force is also set.",
     )
     return p.parse_args()
 
@@ -157,6 +163,7 @@ def retrain_heads(
     lr: float,
     seed: int,
     parent_head_path: Path,
+    feedback_weight: int,
 ) -> dict:
     """Literature 80/10/10 split; feedback (μ,y) appended only to the training set."""
     rng = np.random.default_rng(seed)
@@ -178,9 +185,12 @@ def retrain_heads(
 
     mu_train_lit = mu[train_idx]
     y_train_lit = y[train_idx]
+    feedback_weight = max(1, int(feedback_weight))
     if len(mu_fb) > 0:
-        mu_train = np.vstack([mu_train_lit, mu_fb])
-        y_train = np.concatenate([y_train_lit, y_fb])
+        mu_fb_train = np.repeat(mu_fb, feedback_weight, axis=0)
+        y_fb_train = np.repeat(y_fb, feedback_weight, axis=0)
+        mu_train = np.vstack([mu_train_lit, mu_fb_train])
+        y_train = np.concatenate([y_train_lit, y_fb_train])
     else:
         mu_train = mu_train_lit
         y_train = y_train_lit
@@ -239,6 +249,8 @@ def retrain_heads(
         "n_test": int(len(test_idx)),
         "new_head_path": str(new_head_path),
         "n_feedback_train_rows": int(len(mu_fb)),
+        "feedback_weight": int(feedback_weight),
+        "n_feedback_weighted_rows": int(len(mu_fb) * feedback_weight),
     }
 
 
@@ -275,6 +287,19 @@ def main() -> None:
                 reaction="co2_methanol",
                 emb_dim=int(cvae_args.emb_dim),
             )
+        elif out_cvae.is_dir():
+            print(
+                json.dumps(
+                    {
+                        "warn": (
+                            f"missing CVAE weights at {ckpt_ae}; feedback rows are NOT embedded for this "
+                            "heads retrain (literature-only μ). Copy model_ae.pth into that folder, or pass "
+                            "--cvae-run-dir pointing to a run directory that contains it."
+                        ),
+                    },
+                    indent=2,
+                )
+            )
         else:
             print(
                 json.dumps(
@@ -298,6 +323,7 @@ def main() -> None:
             lr=args.lr,
             seed=args.seed,
             parent_head_path=head_path,
+            feedback_weight=args.feedback_weight,
         )
         version_id = f"heads_v_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
         store.log_model_version(
@@ -314,7 +340,8 @@ def main() -> None:
             )
         )
         versioned.append(version_id)
-        if args.promote:
+        should_promote = bool(args.promote)
+        if should_promote:
             canonical = head_path
             backup = canonical.with_suffix(canonical.suffix + ".bak")
             shutil.copy2(canonical, backup)

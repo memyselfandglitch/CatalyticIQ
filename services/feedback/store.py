@@ -268,6 +268,14 @@ class FeedbackStore:
             ).fetchone()
         return int(row[0] if row else 0)
 
+    def clear_experiments(self) -> int:
+        """Delete all logged experiment rows. Returns how many rows were removed."""
+        with self._connect() as con:
+            row = con.execute("SELECT COUNT(*) FROM experiments").fetchone()
+            n = int(row[0] if row else 0)
+            con.execute("DELETE FROM experiments")
+        return n
+
     def list_model_versions(self) -> list[dict]:
         with self._connect() as con:
             rows = con.execute(

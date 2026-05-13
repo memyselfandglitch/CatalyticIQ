@@ -486,6 +486,45 @@ def _activity_head_scores(
     return out
 
 
+def _feedback_priority_table() -> pd.DataFrame:
+    """Return latest measured experimental outcomes keyed by pseudo-smiles."""
+    try:
+        from services.feedback.store import FeedbackStore
+    except Exception:
+        return pd.DataFrame(columns=["pseudo_smiles", "measured_sty_logged", "logged_at"])
+
+    try:
+        rows = FeedbackStore().list_experiments(limit=10_000)
+    except Exception:
+        return pd.DataFrame(columns=["pseudo_smiles", "measured_sty_logged", "logged_at"])
+
+    recs: list[dict[str, object]] = []
+    for r in rows:
+        measured = r.get("measured_sty")
+        pseudo = r.get("pseudo_smiles")
+        if measured is None or not isinstance(pseudo, str) or not pseudo.strip():
+            continue
+        recs.append(
+            {
+                "pseudo_smiles": pseudo.strip(),
+                "measured_sty_logged": float(measured),
+                "logged_at": r.get("logged_at"),
+            }
+        )
+    if not recs:
+        return pd.DataFrame(columns=["pseudo_smiles", "measured_sty_logged", "logged_at"])
+
+    fb = pd.DataFrame(recs)
+    fb["logged_at"] = pd.to_datetime(fb["logged_at"], errors="coerce")
+    # Keep the latest measurement per exact pseudo-smiles.
+    fb = (
+        fb.sort_values("logged_at", ascending=False, na_position="last")
+        .drop_duplicates(subset=["pseudo_smiles"], keep="first")
+        .reset_index(drop=True)
+    )
+    return fb
+
+
 def postprocess(
     candidates_csv: Path,
     training_csv: Path | None,
@@ -574,9 +613,40 @@ def postprocess(
             training_sty,
         )
 
+    # Demo policy: explicitly prioritize logged experimental rows in reranking.
+    fb = _feedback_priority_table()
+    if not fb.empty:
+        df = df.merge(fb, how="left", on="pseudo_smiles")
+    else:
+        df["measured_sty_logged"] = np.nan
+        df["logged_at"] = pd.NaT
+    df["has_logged_experimental"] = df["measured_sty_logged"].notna()
+    if use_activity_head and "activity_head_sty" in df.columns:
+        df = (
+            df.sort_values(
+                ["has_logged_experimental", "measured_sty_logged", "activity_head_sty"],
+                ascending=[False, False, False],
+                na_position="last",
+            )
+            .drop_duplicates(subset=["pseudo_smiles"])
+            .reset_index(drop=True)
+        )
+    else:
+        df = (
+            df.sort_values(
+                ["has_logged_experimental", "measured_sty_logged", "raw_score"],
+                ascending=[False, False, False],
+                na_position="last",
+            )
+            .drop_duplicates(subset=["pseudo_smiles"])
+            .reset_index(drop=True)
+        )
+
     cols = [
         "pseudo_smiles",
         "composition_view",
+        "has_logged_experimental",
+        "measured_sty_logged",
         "predicted_sty_g_h_gcat",
         "raw_score",
         "n_components",
@@ -639,7 +709,7 @@ def parse_args() -> argparse.Namespace:
         "--cvae-run-dir",
         type=Path,
         default=None,
-        help="e.g. dataset/co2_methanol/output_0_20260428_212044 (must contain model_ae.pth).",
+        help="e.g. dataset/co2_methanol/output_0_20260507_173839 (must contain model_ae.pth).",
     )
     parser.add_argument(
         "--dataset-file",

@@ -91,8 +91,6 @@ if __name__ == '__main__':
 
     # run embedding
     mol_latent_train, mol_embedding_train, y_true_train, y_pred_train, ids_train, c_train = embed(loader_train, AE, NN_PREDICTION, device=args.device)
-    mol_latent_val, mol_embedding_val, y_true_val, y_pred_val, ids_val, c_val = embed(loader_val, AE, NN_PREDICTION, device=args.device)
-    mol_latent_test, mol_embedding_test, y_true_test, y_pred_test, ids_test, c_test = embed(loader_test, AE, NN_PREDICTION, device=args.device)
 
     # min max for each dimension in mol_embedding
     min_val = np.min(mol_embedding_train, axis=0)
@@ -136,7 +134,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         sample_molecules_reached = 0
         sample_molecules_all = 0
-        sample_molecules = 1000
+        sample_molecules = max(1, int(getattr(args, "n_samples", 1000)))
         sample_mol_dict = dict()
         sample_mol = []
         sample_smiles = []

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import subprocess
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,9 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
 CONDA_ENV = os.environ.get("CATALYTICIQ_CONDA_ENV", "catalyticiq")
+# Dashboard "Generate + rank": fewer samples than CLI default (1000) for faster loops; same code path / model weights.
+# Default 250 is temporary; override with CATALYTICIQ_GENERATION_N_SAMPLES.
+_GENERATION_N_SAMPLES = int(os.environ.get("CATALYTICIQ_GENERATION_N_SAMPLES", "250"))
 
 
 def _relative_to_repo(path: Path) -> str:
@@ -31,6 +35,49 @@ def _clean_csv_uses_activity_head(clean: Path | None) -> bool:
     except Exception:
         return False
     return "activity_head_sty" in cols
+
+
+def _rerank_delta_frame(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
+    """Compare candidate rank / score before and after an ActivityHead rerank."""
+    needed = {"composition_view", "predicted_sty_g_h_gcat"}
+    if before.empty or after.empty or not needed.issubset(before.columns) or not needed.issubset(after.columns):
+        return pd.DataFrame()
+
+    before_ranked = before.copy()
+    after_ranked = after.copy()
+    before_ranked["rank_before"] = before_ranked["predicted_sty_g_h_gcat"].rank(
+        method="first",
+        ascending=False,
+    ).astype(int)
+    after_ranked["rank_after"] = after_ranked["predicted_sty_g_h_gcat"].rank(
+        method="first",
+        ascending=False,
+    ).astype(int)
+
+    cols = ["composition_view", "predicted_sty_g_h_gcat"]
+    merged = before_ranked[cols + ["rank_before"]].merge(
+        after_ranked[cols + ["rank_after"]],
+        on="composition_view",
+        how="outer",
+        suffixes=("_before", "_after"),
+    )
+    merged["status"] = "reranked"
+    merged.loc[merged["rank_before"].isna(), "status"] = "new"
+    merged.loc[merged["rank_after"].isna(), "status"] = "removed"
+    merged["sty_delta"] = (
+        merged["predicted_sty_g_h_gcat_after"] - merged["predicted_sty_g_h_gcat_before"]
+    )
+    merged["rank_movement"] = merged["rank_before"] - merged["rank_after"]
+    merged["rank_before"] = merged["rank_before"].astype("Int64")
+    merged["rank_after"] = merged["rank_after"].astype("Int64")
+    return (
+        merged.sort_values(
+            ["status", "rank_after", "rank_before"],
+            ascending=[True, True, True],
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
 
 
 from services.reaction_registry import (  # noqa: E402
@@ -69,6 +116,20 @@ def discover_clean_csv(run_dir: Path) -> Path | None:
 def discover_simulation_csv(run_dir: Path) -> Path | None:
     target = run_dir / "simulation_validation.csv"
     return target if target.exists() else None
+
+
+def merge_co2_demo_output_runs(runs: list[Path], dataset_dir: Path) -> list[Path]:
+    """Keep normal discovery order, but always surface key CO2 demo folders if they have raw generation CSVs."""
+    if dataset_dir.name != "co2_methanol":
+        return runs
+    extras = [dataset_dir / "output_0_20260512_184642"]
+    seen = {p.resolve() for p in runs}
+    out = list(runs)
+    for ex in extras:
+        if ex.is_dir() and ex.resolve() not in seen and discover_generated_csv(ex):
+            out.append(ex)
+            seen.add(ex.resolve())
+    return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def simulation_surrogate_metrics_path(reaction_id: str) -> Path:
@@ -464,7 +525,6 @@ def load_known_catalysts(reaction: str) -> list[dict[str, Any]]:
             "formation_energy_per_atom_ev": e.properties.get("formation_energy_per_atom_ev"),
             "band_gap_ev": e.properties.get("band_gap_ev"),
             "density_g_cc": e.properties.get("density_g_cc"),
-            "citation": e.citation,
         }
         for e in entries
     ]
@@ -520,6 +580,38 @@ def _pct_error(actual: Any, predicted: Any) -> float | None:
     if pd.isna(actual_f) or pd.isna(predicted_f):
         return None
     return 100.0 * (actual_f - predicted_f) / max(abs(predicted_f), 1e-9)
+
+
+def _optional_float(raw: Any) -> float | None:
+    """Parse optional numeric UI text fields without treating blank as zero."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    if pd.isna(value):
+        return None
+    return value
+
+
+def _run_demo_command(cmd: list[str], timeout: int = 900) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _run_timestamp(run_name: str) -> str:
+    match = re.match(r"output_\d+_(.+)", run_name)
+    return match.group(1) if match else run_name
 
 
 def _feedback_discrepancy_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
@@ -600,6 +692,8 @@ if not simple_ui:
     st.caption(profile.caption)
 
 runs = discover_output_runs(DATASET_DIR)
+if profile.id == "co2_methanol":
+    runs = merge_co2_demo_output_runs(runs, DATASET_DIR)
 if not runs:
     st.warning(f"{profile.label} is registered as a pilot reaction, but no generated demo run exists yet.")
     st.caption(profile.caption)
@@ -639,9 +733,34 @@ if not runs:
     )
     st.stop()
 
-run_map = {p.name: p for p in runs}
-selected_run_name = st.sidebar.selectbox("Run folder", list(run_map.keys()))
+candidate_ready_runs = [p for p in runs if discover_generated_csv(p)]
+if not candidate_ready_runs:
+    st.error(
+        f"No generated CSV found in any output folder under "
+        f"{ROOT / 'dataset' / profile.dataset_subdir}."
+    )
+    st.stop()
+
+if len(candidate_ready_runs) < len(runs):
+    skipped = len(runs) - len(candidate_ready_runs)
+    st.sidebar.caption(f"Hiding {skipped} run folder(s) without generated candidates.")
+
+run_map = {p.name: p for p in candidate_ready_runs}
+_run_labels = list(run_map.keys())
+_preferred_run_idx = 0
+for _pref in ("20260512", "173839"):
+    _hit = next((i for i, n in enumerate(_run_labels) if _pref in n), None)
+    if _hit is not None:
+        _preferred_run_idx = _hit
+        break
+selected_run_name = st.sidebar.selectbox(
+    "Candidate-ready run folder",
+    _run_labels,
+    index=_preferred_run_idx,
+    help="Defaults to `output_0_*20260512*` when present (newer CVAE + generation), else `*173839*`.",
+)
 selected_run = run_map[selected_run_name]
+selected_run_time = _run_timestamp(selected_run_name)
 
 gen_csv_files = discover_generated_csv(selected_run)
 gen_stats_files = discover_generated_stats(selected_run)
@@ -732,14 +851,16 @@ _feedback_import_cmd = (
 )
 _feedback_heads_prep_cmd = (
     f"conda run -n {CONDA_ENV} python scripts/train_property_heads.py \\\n"
-    "  --pretrained_time 20260503_190505 \\\n"
+    f"  --file {profile.id} \\\n"
+    f"  --pretrained_time {selected_run_time} \\\n"
     "  --epochs 100"
 )
 _feedback_retrain_cmd = (
     f"conda run -n {CONDA_ENV} python scripts/retrain_with_feedback.py \\\n"
     f"  --file {profile.id} \\\n"
-    f"  --pretrained_time 20260503_190505 \\\n"
-    f"  --mode heads"
+    f"  --pretrained_time {selected_run_time} \\\n"
+    f"  --mode heads \\\n"
+    f"  --promote"
 )
 with st.sidebar.expander("Refresh shortlist (`generated_candidates_clean.csv`)"):
     st.caption("Run from repo root. First = NN rank calibration; second = ActivityHead (recommended).")
@@ -863,21 +984,43 @@ with tab_discover:
         )
         st.caption(f"Generation validity **{vtxt}** · novelty **{ntxt}** (see *Technical details* for charts).")
         with st.expander("Closed-loop demo status", expanded=True):
-            d1, d2, d3, d4 = st.columns(4)
+            d1, d2, d3, d4, d5 = st.columns(5)
             d1.metric("Known catalyst baseline", f"{len(load_known_catalysts(profile.retrieval_reaction))}")
             d2.metric("Validated shortlist rows", f"{len(simulation_df):,}" if not simulation_df.empty else "0")
-            d3.metric(
+            _n_ct_discover = (
+                int(simulation_df["simulation_backend"].astype(str).str.contains("cantera", case=False).sum())
+                if not simulation_df.empty and "simulation_backend" in simulation_df.columns
+                else 0
+            )
+            d3.metric("Cantera-backed rows", f"{_n_ct_discover:,}")
+            d4.metric(
                 "Condition sweep rows",
                 f"{surrogate_metrics.get('n_rows', 0):,}" if surrogate_metrics else ("ready" if sweep_csv_path.exists() else "0"),
             )
             test_r2 = surrogate_metrics.get("test_r2") if surrogate_metrics else None
-            d4.metric("Simulation surrogate R²", f"{test_r2:.3f}" if test_r2 is not None else "N/A")
+            d5.metric("Simulation surrogate R²", f"{test_r2:.3f}" if test_r2 is not None else "N/A")
             st.caption(
-                "Baseline = retrieved/offline known catalyst entries. Validated shortlist = generated candidates "
-                "passed through the thermodynamic + descriptor simulation layer. Condition sweep = synthetic reactor "
-                "conditions used to train the fast simulation surrogate; its R² measures fit to simulation labels, "
-                "not wet-lab accuracy."
+                "Baseline = retrieved/offline known catalyst entries. Validated shortlist = row count in "
+                "**this** output run's `simulation_validation.csv` (thermodynamic + descriptor layer). "
+                "**Cantera-backed** counts rows whose `simulation_backend` includes a Cantera equilibrium cross-check. "
+                "Condition sweep + surrogate R² come from the shared reaction profile CSV under `dataset/simulation/` "
+                "(independent of which generation run is selected). Surrogate R² is fit to simulation labels, not "
+                "wet-lab accuracy."
             )
+            if _n_ct_discover == 0 and not simulation_df.empty:
+                st.caption(
+                    "Cantera-backed is 0 for this CSV: install Cantera and regenerate `simulation_validation.csv` "
+                    "(sidebar **Run simulation validation**). The code now resolves `gri30.yaml` from Cantera's data "
+                    "directory or `config/reactions/`."
+                )
+            _need_sim = clean_path is not None and (simulation_path is None or simulation_df.empty)
+            if _need_sim:
+                st.info(
+                    "Validated shortlist is **0** because this run has no simulation output yet (or the CSV is empty). "
+                    "Post-processing alone does not run the simulator. Use sidebar **Run simulation validation** "
+                    "so `simulation_validation.csv` is written next to `generated_candidates_clean.csv`, then "
+                    "**Reload data** if counts look stale."
+                )
     else:
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Generated", f"{len(raw_candidates):,}")
@@ -956,6 +1099,35 @@ with tab_discover:
             "For the demo, focus on predicted STY, gate tier/score, simulated STY, and simulation confidence. "
             "Selectivity and stability are descriptor priors until real lab labels are logged."
         )
+        rerank_delta_state = st.session_state.get("latest_rerank_delta")
+        if isinstance(rerank_delta_state, pd.DataFrame) and not rerank_delta_state.empty:
+            with st.expander("Latest reranking impact", expanded=True):
+                st.caption(
+                    "This compares the shortlist immediately before and after the latest **Generate + rank** run. "
+                    "Positive rank movement means the candidate moved up."
+                )
+                show = [
+                    "composition_view",
+                    "status",
+                    "rank_before",
+                    "rank_after",
+                    "rank_movement",
+                    "predicted_sty_g_h_gcat_before",
+                    "predicted_sty_g_h_gcat_after",
+                    "sty_delta",
+                ]
+                st.dataframe(
+                    rerank_delta_state[show],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "composition_view": "candidate",
+                        "rank_movement": st.column_config.NumberColumn("rank movement", format="%d"),
+                        "predicted_sty_g_h_gcat_before": st.column_config.NumberColumn("STY before", format="%.4f"),
+                        "predicted_sty_g_h_gcat_after": st.column_config.NumberColumn("STY after", format="%.4f"),
+                        "sty_delta": st.column_config.NumberColumn("STY delta", format="%+.4f"),
+                    },
+                )
 
         st.markdown("**Top candidate RDKit composition graphs**")
         n_show = min(8, len(clean_df))
@@ -1038,7 +1210,7 @@ with tab_pathway:
             lambda r: f"{r['composition_view']} | STY {r['predicted_sty_g_h_gcat']:.2f}",
             axis=1,
         ).tolist()
-        ccol, mcol, bcol = st.columns([2, 1, 1])
+        ccol, mcol = st.columns([2, 1])
         with ccol:
             choice_idx = st.selectbox(
                 "Candidate",
@@ -1057,21 +1229,10 @@ with tab_pathway:
                     "The chosen mechanism does not change the activity ranking, only the diagram."
                 ),
             )
-        with bcol:
-            backend = st.radio(
-                "Backend tier",
-                ["heuristic_scaling", "xtb_topn", "dft_topk"],
-                index=0,
-                key="pathway_backend",
-                help=(
-                    "Tier A always runs. Tier B / C activate when xtb-python / fairchem are "
-                    "installed; otherwise they degrade gracefully and report the actual backend used."
-                ),
-            )
-
         chosen_smiles = clean_df.iloc[choice_idx]["pseudo_smiles"]
+        backend = "heuristic_scaling"
         energy_profile = compute_energy_profile(chosen_smiles, mechanism, backend)
-        st.caption(f"Backend used: **{energy_profile['backend']}**. {energy_profile['citation']}")
+        st.caption(f"Pathway backend: **{energy_profile['backend']}**. {energy_profile['citation']}")
         st.caption(
             "This diagram is a mechanism-level descriptor view for CO2-to-methanol, not a full reactor simulation. "
             "For each candidate, the graph is computed from composition-weighted adsorption/binding descriptors."
@@ -1129,20 +1290,26 @@ with tab_compare:
             size="stability_proxy",
             use_container_width=True,
         )
+        _n_novel = len(novel)
+        _n_known_plot = len(known_df) if known_rows else 0
         st.caption(
             "Use this as a prioritisation map, not final truth: y-axis is ActivityHead STY; x-axis is a composition "
             "selectivity prior; bubble size is a descriptor-based stability prior. Logged lab feedback replaces "
-            "these priors over time."
+            "these priors over time. "
+            f"**Points shown:** {_n_novel:,} from this run’s shortlist (`generated_candidates_clean.csv`) plus "
+            f"{_n_known_plot:,} known baseline entries (Discover’s “Known catalyst baseline” count). "
+            "Known catalysts are given the **median shortlist STY** on y only so they appear on the same scale as "
+            "novel candidates; that value is not a measured literature STY per composition."
         )
         st.dataframe(combined.sort_values("predicted_sty_g_h_gcat", ascending=False).head(20), use_container_width=True)
 
 
 # ------------------------------------------------------------- KNOWLEDGE BASE
 with tab_kb:
-    st.subheader("Known catalysts (Materials Project + OCP)")
+    st.subheader("Known catalysts")
     known = load_known_catalysts(profile.retrieval_reaction)
     if not known:
-        st.info("Knowledge base is empty.")
+        st.info("No known catalyst entries loaded.")
     else:
         st.caption(
             f"{len(known)} entries from the offline Materials Project/OCP-style seed cache. "
@@ -1153,29 +1320,25 @@ with tab_kb:
             known_df["composition"] = known_df["composition"].apply(lambda xs: "/".join(xs))
         st.dataframe(known_df, use_container_width=True)
 
-        _ocp_title = "Optional: qualitative OCP adsorption lookup"
+        _ocp_title = "Optional: adsorption lookup (qualitative)"
         if simple_ui:
             with st.expander(_ocp_title, expanded=False):
-                st.caption(
-                    "Offline seed of representative adsorbate binding energies. Treat citations as source-family "
-                    "labels, not paper-grade references."
-                )
+                st.caption("Offline representative adsorbate binding energies for a composition probe.")
                 comp_pick = st.text_input("Composition (e.g. Cu/Zn)", value="Cu/Zn", key="ocp_probe_tab")
                 if comp_pick.strip():
                     symbols = tuple(s.strip() for s in comp_pick.split("/") if s.strip())
                     ocp_rows = load_ocp_for_composition(symbols)
                     if ocp_rows:
-                        st.dataframe(pd.DataFrame(ocp_rows), use_container_width=True)
+                        ocp_df = pd.DataFrame(ocp_rows)
+                        ocp_df = ocp_df.drop(columns=["citation"], errors="ignore")
+                        st.dataframe(ocp_df, use_container_width=True)
                     else:
                         st.info(f"No OCP entries for {'/'.join(symbols)}.")
         else:
             st.markdown(f"**{_ocp_title}**")
-            st.caption(
-                "Offline seed of representative adsorbate binding energies. Treat citations as source-family "
-                "labels, not paper-grade references."
-            )
+            st.caption("Offline representative adsorbate binding energies for a composition probe.")
             comp_pick = st.text_input(
-                "Probe OCP binding energies for composition (slash-separated, e.g. Cu/Zn)",
+                "Probe binding energies for composition (slash-separated, e.g. Cu/Zn)",
                 value="Cu/Zn",
                 key="ocp_probe_tab",
             )
@@ -1183,7 +1346,9 @@ with tab_kb:
                 symbols = tuple(s.strip() for s in comp_pick.split("/") if s.strip())
                 ocp_rows = load_ocp_for_composition(symbols)
                 if ocp_rows:
-                    st.dataframe(pd.DataFrame(ocp_rows), use_container_width=True)
+                    ocp_df = pd.DataFrame(ocp_rows)
+                    ocp_df = ocp_df.drop(columns=["citation"], errors="ignore")
+                    st.dataframe(ocp_df, use_container_width=True)
                 else:
                     st.info(f"No OCP entries cached for composition {'/'.join(symbols)}.")
 
@@ -1194,13 +1359,16 @@ with tab_validation:
     if simulation_df.empty:
         st.info("No simulation_validation.csv found for this run. Use the sidebar simulation command.")
     else:
+        n_cantera = (
+            int(simulation_df["simulation_backend"].astype(str).str.contains("cantera", case=False).sum())
+            if "simulation_backend" in simulation_df.columns
+            else 0
+        )
         sim1, sim2, sim3, sim4 = st.columns(4)
         sim1.metric("Validated candidates", f"{len(simulation_df):,}")
         sim2.metric(
             "Cantera-backed rows",
-            f"{int(simulation_df['simulation_backend'].astype(str).str.contains('cantera', case=False).sum()):,}"
-            if "simulation_backend" in simulation_df.columns
-            else "N/A",
+            f"{n_cantera:,}",
         )
         sim3.metric(
             "Mean eq. conversion",
@@ -1215,6 +1383,12 @@ with tab_validation:
             else "N/A",
         )
         st.dataframe(simulation_df.head(30), use_container_width=True)
+        if n_cantera == 0:
+            st.caption(
+                "If this stays at 0: install **Cantera** (`conda install -c conda-forge cantera`), ensure `gri30.yaml` "
+                "is discoverable (bundled with Cantera or next to `config/reactions/co2_methanol.yaml`), then re-run "
+                "the sidebar **validate_shortlist_simulation** command to regenerate `simulation_validation.csv`."
+            )
         st.caption(
             "Equilibrium conversion is the thermodynamic CO2 conversion predicted at the selected T/P/feed before "
             "lab calibration. Cantera-backed rows mean Cantera successfully cross-checked gas equilibrium; the "
@@ -1307,7 +1481,250 @@ with tab_feedback:
             "retrain the ActivityHead ranking model. "
             "Full CVAE fine-tuning is triggered only after enough validated lab rows pass drift checks."
         )
-        with st.expander("Feedback import and retraining commands", expanded=True):
+        feedback_rows = feedback_store.list_experiments(limit=10_000)
+        measured_feedback_rows = [r for r in feedback_rows if r.get("measured_sty") is not None]
+        versions_preview = feedback_store.list_model_versions()
+
+        st.markdown("**Closed-loop demo controls**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Measured feedback rows", len(measured_feedback_rows))
+        c2.metric("Current CVAE run", selected_run_time)
+        c3.metric("Last feedback model", versions_preview[0]["version"] if versions_preview else "not retrained")
+
+        action_left, action_mid, action_right, action_clear = st.columns([1, 1, 1, 1])
+        with action_left:
+            retrain_clicked = st.button(
+                "Retrain activity head",
+                type="primary",
+                use_container_width=True,
+                disabled=not measured_feedback_rows,
+                help=(
+                    "Runs scripts/retrain_with_feedback.py --mode heads --promote for the CVAE run selected in the "
+                    "sidebar. Retrains ActivityHead using cached literature embeddings (embeddings.npz) plus measured "
+                    "STY rows from the feedback store. For the demo path, --promote always activates the newly "
+                    "retrained head (even if held-out literature R² regresses). Does not delete logged experiments."
+                ),
+            )
+        with action_mid:
+            generate_clicked = st.button(
+                "Generate + rank candidates",
+                use_container_width=True,
+                help=(
+                    "Runs generation.py for the selected CVAE run, then postprocess_candidates.py with "
+                    "--use-activity-head. Overwrites generated_candidates_clean.csv in that run folder and refreshes "
+                    "cached CSV reads. The rerank delta table compares predicted STY/rank before vs after this run "
+                    "(same compositions only); it is not lab measured vs predicted. "
+                ),
+            )
+        with action_right:
+            refresh_clicked = st.button(
+                "Refresh dashboard",
+                use_container_width=True,
+                help=(
+                    "Clears Streamlit cached data and reloads files from disk (shortlists, simulation CSVs, etc.). "
+                    "Use after manual edits or subprocess steps outside the app. Does not train models or change DuckDB."
+                ),
+            )
+        with action_clear:
+            clear_logs_clicked = st.button(
+                "Clear logged experiments",
+                use_container_width=True,
+                help=(
+                    "Deletes every row in DuckDB table experiments (cache/feedback.duckdb). "
+                    "Does not remove model_versions or dataset checkpoints. "
+                    "Re-import examples with scripts/import_feedback_csv.py if needed."
+                ),
+            )
+
+        if "_feedback_cleared_count" in st.session_state:
+            _cnt = st.session_state.pop("_feedback_cleared_count")
+            st.success(f"Cleared {_cnt} logged experiment row(s) from cache/feedback.duckdb.")
+
+        st.caption(
+            "Logged lab rows live in `cache/feedback.duckdb` (`experiments`). "
+            "Clear logged experiments wipes that table only; CVAE runs and `model_versions` are unchanged."
+        )
+
+        if clear_logs_clicked:
+            _cleared = feedback_store.clear_experiments()
+            st.cache_data.clear()
+            st.session_state["_feedback_cleared_count"] = _cleared
+            st.rerun()
+
+        if refresh_clicked:
+            st.cache_data.clear()
+            st.rerun()
+
+        if retrain_clicked:
+            cmd = [
+                "conda",
+                "run",
+                "--no-capture-output",
+                "-n",
+                CONDA_ENV,
+                "python",
+                "scripts/retrain_with_feedback.py",
+                "--file",
+                profile.id,
+                "--pretrained_time",
+                selected_run_time,
+                "--mode",
+                "heads",
+                "--promote",
+            ]
+            with st.spinner("Retraining ActivityHead with logged feedback..."):
+                result = _run_demo_command(cmd, timeout=900)
+            st.session_state["feedback_last_action"] = {
+                "label": "Retrain activity head",
+                "returncode": result.returncode,
+                "stdout": result.stdout[-4000:],
+                "stderr": result.stderr[-2000:],
+            }
+            if result.returncode == 0:
+                st.cache_data.clear()
+                st.success("Retraining complete. The promoted ActivityHead is now active for ranking.")
+            else:
+                st.error("Retraining failed. Expand the run log below.")
+
+        if generate_clicked:
+            before_rerank_df = pd.DataFrame()
+            before_clean_path = discover_clean_csv(selected_run)
+            if before_clean_path is not None:
+                try:
+                    before_rerank_df = pd.read_csv(before_clean_path)
+                except Exception:
+                    before_rerank_df = pd.DataFrame()
+            gen_cmd = [
+                "conda",
+                "run",
+                "--no-capture-output",
+                "-n",
+                CONDA_ENV,
+                "python",
+                "generation.py",
+                "--file",
+                profile.id,
+                "--pretrained_file",
+                profile.id,
+                "--pretrained_time",
+                selected_run_time,
+                "--correction",
+                "enabled",
+                "--from_around_mol",
+                "enabled",
+                "--n_samples",
+                str(_GENERATION_N_SAMPLES),
+            ]
+            with st.spinner("Generating a fresh CVAE candidate batch..."):
+                gen_result = _run_demo_command(gen_cmd, timeout=1200)
+            newest_generated = discover_generated_csv(selected_run)[0] if discover_generated_csv(selected_run) else selected_gen_csv_path
+            if gen_result.returncode == 0:
+                post_cmd = [
+                    "conda",
+                    "run",
+                    "--no-capture-output",
+                    "-n",
+                    CONDA_ENV,
+                    "python",
+                    "scripts/postprocess_candidates.py",
+                    "--candidates",
+                    _relative_to_repo(newest_generated),
+                    "--training",
+                    _train_csv_rel,
+                    "--dataset-file",
+                    profile.id,
+                    "--use-activity-head",
+                    "--cvae-run-dir",
+                    _run_rel,
+                    "--output",
+                    _out_rel,
+                ]
+                with st.spinner("Ranking and cleaning candidates with the current ActivityHead..."):
+                    post_result = _run_demo_command(post_cmd, timeout=900)
+            else:
+                post_result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+            rerank_delta = pd.DataFrame()
+            if gen_result.returncode == 0 and post_result.returncode == 0:
+                after_clean_path = selected_run / "generated_candidates_clean.csv"
+                try:
+                    after_rerank_df = pd.read_csv(after_clean_path)
+                    rerank_delta = _rerank_delta_frame(before_rerank_df, after_rerank_df)
+                except Exception:
+                    rerank_delta = pd.DataFrame()
+                st.session_state["latest_rerank_delta"] = rerank_delta
+                st.session_state["latest_rerank_meta"] = {
+                    "raw_file": newest_generated.name,
+                    "rows_before": int(len(before_rerank_df)),
+                    "rows_after": int(len(after_rerank_df)) if "after_rerank_df" in locals() else 0,
+                }
+            st.session_state["feedback_last_action"] = {
+                "label": "Generate + rank candidates",
+                "returncode": gen_result.returncode or post_result.returncode,
+                "stdout": (gen_result.stdout + "\n" + post_result.stdout)[-5000:],
+                "stderr": (gen_result.stderr + "\n" + post_result.stderr)[-3000:],
+            }
+            if gen_result.returncode == 0 and post_result.returncode == 0:
+                st.cache_data.clear()
+                st.success(f"Generated and ranked candidates. Latest raw file: {newest_generated.name}")
+                if not rerank_delta.empty:
+                    moved = rerank_delta[
+                        (rerank_delta["status"] == "reranked")
+                        & (
+                            (rerank_delta["sty_delta"].abs() > 1e-9)
+                            | (rerank_delta["rank_movement"].fillna(0) != 0)
+                        )
+                    ]
+                    st.info(
+                        f"Reranking impact captured: {len(moved)} existing candidate(s) changed score/rank. "
+                        "See **Reranking impact** below and on the Discover tab."
+                    )
+            else:
+                st.error("Generation or ranking failed. Expand the run log below.")
+
+        rerank_delta_state = st.session_state.get("latest_rerank_delta")
+        if isinstance(rerank_delta_state, pd.DataFrame) and not rerank_delta_state.empty:
+            meta = st.session_state.get("latest_rerank_meta", {})
+            with st.expander("Reranking impact from latest Generate + Rank", expanded=True):
+                st.caption(
+                    f"Raw batch: `{meta.get('raw_file', 'latest')}` · "
+                    f"shortlist rows {meta.get('rows_before', '?')} -> {meta.get('rows_after', '?')}. "
+                    "Positive rank movement means the candidate moved up."
+                )
+                show = [
+                    "composition_view",
+                    "status",
+                    "rank_before",
+                    "rank_after",
+                    "rank_movement",
+                    "predicted_sty_g_h_gcat_before",
+                    "predicted_sty_g_h_gcat_after",
+                    "sty_delta",
+                ]
+                st.dataframe(
+                    rerank_delta_state[show],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "composition_view": "candidate",
+                        "rank_movement": st.column_config.NumberColumn("rank movement", format="%d"),
+                        "predicted_sty_g_h_gcat_before": st.column_config.NumberColumn("STY before", format="%.4f"),
+                        "predicted_sty_g_h_gcat_after": st.column_config.NumberColumn("STY after", format="%.4f"),
+                        "sty_delta": st.column_config.NumberColumn("STY delta", format="%+.4f"),
+                    },
+                )
+
+        last_action = st.session_state.get("feedback_last_action")
+        if last_action:
+            status = "success" if last_action["returncode"] == 0 else "error"
+            with st.expander(f"Last action log: {last_action['label']} ({status})", expanded=last_action["returncode"] != 0):
+                if last_action.get("stdout"):
+                    st.markdown("**stdout**")
+                    st.code(last_action["stdout"], language="text")
+                if last_action.get("stderr"):
+                    st.markdown("**stderr**")
+                    st.code(last_action["stderr"], language="text")
+
+        with st.expander("Feedback import and retraining commands", expanded=False):
             st.code(_feedback_import_cmd, language="bash")
             st.code(_feedback_heads_prep_cmd, language="bash")
             st.code(_feedback_retrain_cmd, language="bash")
@@ -1330,12 +1747,39 @@ with tab_feedback:
                     lambda r: f"{r['composition_view']} ({r['pseudo_smiles']})",
                     axis=1,
                 ).tolist()
-            chosen = st.selectbox(
-                "Candidate from latest shortlist",
-                options=candidate_choices or ["(no shortlist available)"],
-                key="feedback_candidate",
+            candidate_source = st.radio(
+                "Candidate source",
+                ["Latest shortlist", "New candidate"],
+                horizontal=True,
+                key="feedback_candidate_source",
             )
+            chosen = "(no shortlist available)"
+            if candidate_source == "Latest shortlist":
+                chosen = st.selectbox(
+                    "Candidate from latest shortlist",
+                    options=candidate_choices or ["(no shortlist available)"],
+                    key="feedback_candidate",
+                )
             with st.form("feedback_form", clear_on_submit=True):
+                if candidate_source == "New candidate":
+                    custom_comp_view = st.text_input(
+                        "Candidate name / composition",
+                        placeholder="Example: Cu/ZnO/ZrO2",
+                    )
+                    custom_pseudo = st.text_input(
+                        "Pseudo-SMILES / component tokens",
+                        placeholder="Example: [Cu].[Zn].[Zr]",
+                    )
+                    st.caption("Optional predictions are stored for discrepancy analysis only; measured STY drives heads retraining.")
+                    manual_pred_sty = st.text_input("Predicted STY (optional)", placeholder="Example: 0.84")
+                    manual_pred_sel = st.text_input("Predicted selectivity % (optional)", placeholder="Example: 68")
+                    manual_pred_yield = st.text_input("Predicted yield % (optional)", placeholder="Example: 16")
+                else:
+                    custom_comp_view = ""
+                    custom_pseudo = ""
+                    manual_pred_sty = ""
+                    manual_pred_sel = ""
+                    manual_pred_yield = ""
                 measured_sty = st.number_input("Measured STY (g MeOH / h / g cat)", min_value=0.0, step=0.05, value=0.0)
                 measured_sel = st.number_input("Measured MeOH selectivity (%)", min_value=0.0, max_value=100.0, step=1.0, value=0.0)
                 measured_yield = st.number_input("Measured MeOH yield (%)", min_value=0.0, max_value=100.0, step=1.0, value=0.0)
@@ -1346,29 +1790,44 @@ with tab_feedback:
                 user = st.text_input("Logged by", value="researcher")
                 note = st.text_area("Notes", value="")
                 submit = st.form_submit_button("Save experiment")
-                if submit and "(" in chosen:
-                    comp_view = chosen.split(" (")[0]
-                    pseudo = chosen.split("(", 1)[1].rstrip(")")
-                    predicted_row = (
-                        clean_df[clean_df["pseudo_smiles"] == pseudo].head(1)
-                        if not clean_df.empty and "pseudo_smiles" in clean_df.columns
-                        else pd.DataFrame()
-                    )
-                    predicted_sty = (
-                        float(predicted_row.iloc[0]["predicted_sty_g_h_gcat"])
-                        if not predicted_row.empty and pd.notna(predicted_row.iloc[0].get("predicted_sty_g_h_gcat"))
-                        else None
-                    )
-                    predicted_selectivity = (
-                        float(predicted_row.iloc[0]["selectivity_proxy_pct"])
-                        if not predicted_row.empty and pd.notna(predicted_row.iloc[0].get("selectivity_proxy_pct"))
-                        else None
-                    )
-                    predicted_yield = None
-                    if predicted_selectivity is not None and "equilibrium_conversion_pct" in predicted_row.columns:
-                        conv = predicted_row.iloc[0].get("equilibrium_conversion_pct")
-                        if pd.notna(conv):
-                            predicted_yield = float(conv) * predicted_selectivity / 100.0
+                if submit:
+                    predicted_row = pd.DataFrame()
+                    if candidate_source == "Latest shortlist":
+                        if "(" not in chosen:
+                            st.error("Select a shortlist candidate before saving.")
+                            st.stop()
+                        comp_view = chosen.split(" (")[0]
+                        pseudo = chosen.split("(", 1)[1].rstrip(")")
+                        predicted_row = (
+                            clean_df[clean_df["pseudo_smiles"] == pseudo].head(1)
+                            if not clean_df.empty and "pseudo_smiles" in clean_df.columns
+                            else pd.DataFrame()
+                        )
+                        predicted_sty = (
+                            float(predicted_row.iloc[0]["predicted_sty_g_h_gcat"])
+                            if not predicted_row.empty and pd.notna(predicted_row.iloc[0].get("predicted_sty_g_h_gcat"))
+                            else None
+                        )
+                        predicted_selectivity = (
+                            float(predicted_row.iloc[0]["selectivity_proxy_pct"])
+                            if not predicted_row.empty and pd.notna(predicted_row.iloc[0].get("selectivity_proxy_pct"))
+                            else None
+                        )
+                        predicted_yield = None
+                        if predicted_selectivity is not None and "equilibrium_conversion_pct" in predicted_row.columns:
+                            conv = predicted_row.iloc[0].get("equilibrium_conversion_pct")
+                            if pd.notna(conv):
+                                predicted_yield = float(conv) * predicted_selectivity / 100.0
+                    else:
+                        comp_view = custom_comp_view.strip()
+                        pseudo = custom_pseudo.strip() or comp_view
+                        if not comp_view or not pseudo:
+                            st.error("Enter both a candidate name/composition and pseudo-SMILES/component tokens.")
+                            st.stop()
+                        predicted_sty = _optional_float(manual_pred_sty)
+                        predicted_selectivity = _optional_float(manual_pred_sel)
+                        predicted_yield = _optional_float(manual_pred_yield)
+
                     rec = ExperimentRecord(
                         candidate_id=pseudo,
                         pseudo_smiles=pseudo,
@@ -1389,7 +1848,7 @@ with tab_feedback:
                     st.success(f"Logged experiment for {comp_view}.")
 
         with fr:
-            st.markdown("**Recent experiments**")
+            st.markdown("**Logged experiments**")
             recent = feedback_store.list_experiments(limit=20)
             if not recent:
                 st.info("No experiments logged yet.")
@@ -1399,6 +1858,7 @@ with tab_feedback:
                         {
                             "logged_at": r["logged_at"],
                             "composition": r["composition_view"],
+                            "pseudo_smiles": r["pseudo_smiles"],
                             "predicted_sty": r.get("predicted_sty"),
                             "measured_sty": r["measured_sty"],
                             "predicted_selectivity": r.get("predicted_selectivity"),
@@ -1406,23 +1866,44 @@ with tab_feedback:
                             "predicted_yield": r.get("predicted_yield"),
                             "measured_yield": r.get("measured_yield"),
                             "stability_h": r["measured_stability_tos_h"],
+                            "conditions": r.get("conditions"),
                             "user": r["user"],
                             "model_version": r["model_version"],
                         }
                         for r in recent
                     ]
                 )
-                st.dataframe(recent_df, use_container_width=True)
+                st.caption("Raw rows from cache/feedback.duckdb. Gap columns below are derived, not separately logged.")
+                st.dataframe(
+                    recent_df,
+                    use_container_width=True,
+                    column_config={
+                        "predicted_sty": st.column_config.NumberColumn("Pred STY", format="%.4f"),
+                        "measured_sty": st.column_config.NumberColumn("Measured STY", format="%.4f"),
+                        "predicted_selectivity": st.column_config.NumberColumn("Pred sel %", format="%.1f"),
+                        "measured_selectivity": st.column_config.NumberColumn("Measured sel %", format="%.1f"),
+                        "predicted_yield": st.column_config.NumberColumn("Pred yield %", format="%.1f"),
+                        "measured_yield": st.column_config.NumberColumn("Measured yield %", format="%.1f"),
+                    },
+                )
 
                 discrepancy_df = _feedback_discrepancy_frame(recent)
                 if not discrepancy_df.empty:
-                    st.markdown("**Prediction vs actual discrepancy analysis**")
-                    flagged = discrepancy_df[discrepancy_df["flags"] != "ok"].copy()
-                    if flagged.empty:
-                        st.success("No major discrepancies under current demo thresholds.")
-                    else:
-                        st.warning(f"{len(flagged)} feedback row(s) exceed discrepancy thresholds.")
-                    st.dataframe(discrepancy_df, use_container_width=True)
+                    with st.expander("Prediction vs actual analysis", expanded=True):
+                        flagged = discrepancy_df[discrepancy_df["flags"] != "ok"].copy()
+                        if flagged.empty:
+                            st.success("No major discrepancies under current demo thresholds.")
+                        else:
+                            st.warning(f"{len(flagged)} feedback row(s) exceed discrepancy thresholds.")
+                        st.dataframe(
+                            discrepancy_df,
+                            use_container_width=True,
+                            column_config={
+                                "sty_error_pct": st.column_config.NumberColumn("STY error %", format="%.1f"),
+                                "selectivity_delta": st.column_config.NumberColumn("Sel delta", format="%.1f"),
+                                "yield_delta": st.column_config.NumberColumn("Yield delta", format="%.1f"),
+                            },
+                        )
 
                 n_pending = feedback_store.count_since_last_train("current")
                 st.caption(

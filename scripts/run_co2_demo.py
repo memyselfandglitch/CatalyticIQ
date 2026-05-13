@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RUN = ROOT / "dataset" / "co2_methanol" / "output_0_20260503_190505"
+DEFAULT_RUN = ROOT / "dataset" / "co2_methanol" / "output_0_20260507_173839"
 DEFAULT_CONFIG = ROOT / "config" / "reactions" / "co2_methanol.yaml"
 
 
