@@ -18,6 +18,9 @@ env/
 .cache/
 .pytest_cache/
 
+# Streamlit secrets (API keys); use Cloud Secrets UI or local file - never commit
+.streamlit/secrets.toml
+
 # Phase 4/6 service state (DuckDB caches; regenerable from code seeds)
 cache/
 

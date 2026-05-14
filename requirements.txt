@@ -5,3 +5,7 @@ matplotlib>=3.8,<4
 PyYAML>=6,<7
 requests>=2.32,<3
 duckdb>=1.1,<2
+py3Dmol>=2,<4
+pymatgen>=2024.1,<2026
+mp-api>=0.39,<1
+# Optional: generated heterostructures (`scripts/build_catalyst_structure.py`, Discover-tab builder).
