@@ -493,112 +493,8 @@ def _components_from_smiles(smiles: str) -> list[str]:
 
 
 # =========================================================================
-# Chemistry helpers (RDKit, energy, retrieval, stability)
+# Chemistry helpers (energy, retrieval, stability)
 # =========================================================================
-
-@st.cache_data(show_spinner=False)
-def render_smiles_png(smiles: str, size: int = 220) -> bytes | None:
-    try:
-        from rdkit import Chem
-        from rdkit.Chem import Draw
-    except Exception:
-        return None
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
-    try:
-        img = Draw.MolToImage(mol, size=(size, size))
-    except Exception:
-        return None
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-@st.cache_data(show_spinner=False)
-def render_catalyst_graph_png(smiles: str, size: int = 260) -> bytes | None:
-    """Render pseudo-SMILES catalyst tokens as a bonded RDKit composition graph.
-
-    Generated candidates are catalyst compositions like ``[Cu].[Zn]``. RDKit
-    correctly interprets those as disconnected atoms, which is chemically honest
-    but visually unhelpful in the dashboard. For shortlist review we render a
-    labelled composition graph with single bonds between components so users can
-    visually scan candidate make-up without pretending this is a resolved
-    molecular structure.
-    """
-    components = _components_from_smiles(smiles)
-    if not components:
-        return render_smiles_png(smiles, size=size)
-    try:
-        from rdkit import Chem
-        from rdkit.Chem import Draw, rdDepictor
-    except Exception:
-        return render_composition_graph_png(smiles, size=size)
-
-    try:
-        rw = Chem.RWMol()
-        atom_indices: list[int] = []
-        for component in components:
-            atom = Chem.Atom(component)
-            atom.SetProp("atomLabel", component)
-            atom_indices.append(rw.AddAtom(atom))
-        for left, right in zip(atom_indices, atom_indices[1:]):
-            rw.AddBond(left, right, Chem.BondType.SINGLE)
-        mol = rw.GetMol()
-        rdDepictor.Compute2DCoords(mol)
-        drawer = Draw.MolDraw2DCairo(size, size)
-        opts = drawer.drawOptions()
-        opts.addAtomIndices = False
-        opts.fixedBondLength = 38
-        opts.padding = 0.18
-        for atom in mol.GetAtoms():
-            opts.atomLabels[atom.GetIdx()] = atom.GetProp("atomLabel")
-        drawer.DrawMolecule(mol)
-        drawer.FinishDrawing()
-        return drawer.GetDrawingText()
-    except Exception:
-        return render_composition_graph_png(smiles, size=size)
-
-
-@st.cache_data(show_spinner=False)
-def render_composition_graph_png(smiles: str, size: int = 260) -> bytes | None:
-    components = _components_from_smiles(smiles)
-    if not components:
-        return None
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except Exception:
-        return None
-
-    fig, ax = plt.subplots(figsize=(size / 100, size / 100), dpi=100)
-    ax.set_axis_off()
-    n = len(components)
-    xs = [0.5] if n == 1 else [0.15 + 0.7 * i / (n - 1) for i in range(n)]
-    y = 0.52
-    for left, right in zip(xs, xs[1:]):
-        ax.plot([left + 0.035, right - 0.035], [y, y], color="#111827", linewidth=2.0)
-    for x, component in zip(xs, components):
-        ax.text(
-            x,
-            y,
-            component,
-            ha="center",
-            va="center",
-            fontsize=20,
-            fontweight="semibold",
-            color="#111827",
-            bbox={"boxstyle": "circle,pad=0.32", "facecolor": "white", "edgecolor": "#d1d5db", "linewidth": 1.2},
-        )
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    fig.tight_layout(pad=0)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="PNG", dpi=100, transparent=False, facecolor="white")
-    plt.close(fig)
-    return buf.getvalue()
 
 
 @st.cache_data(show_spinner=False)
@@ -1726,21 +1622,6 @@ with tab_discover:
                         "sty_delta": st.column_config.NumberColumn("STY delta", format="%+.4f"),
                     },
                 )
-
-        st.markdown("**Top candidate RDKit composition graphs**")
-        n_show = min(8, len(clean_df))
-        cols = st.columns(min(4, max(1, n_show)))
-        for i in range(n_show):
-            row = clean_df.iloc[i]
-            png = render_catalyst_graph_png(row["pseudo_smiles"])
-            with cols[i % len(cols)]:
-                if png is not None:
-                    st.image(
-                        png,
-                        caption=f"{row['composition_view']} — STY {row['predicted_sty_g_h_gcat']:.2f}",
-                    )
-                else:
-                    st.write(f"{row['composition_view']} (no graph)")
 
         csv_bytes = clean_df.to_csv(index=False).encode("utf-8")
         st.download_button(
