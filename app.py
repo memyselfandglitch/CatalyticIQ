@@ -220,6 +220,17 @@ def _candidate_elements(row: Any) -> list[str]:
     return out
 
 
+def _candidate_component_tokens(row: Any) -> list[str]:
+    text = str(row.get("composition_view", "") or row.get("components", ""))
+    tokens = [t.strip() for t in re.split(r"[/|,+;]", text) if t.strip()]
+    return tokens
+
+
+def _candidate_has_elemental_component(row: Any, symbol: str) -> bool:
+    pattern = re.compile(rf"^{re.escape(symbol)}(?:\d|\.|$)")
+    return any(pattern.match(token) for token in _candidate_component_tokens(row))
+
+
 def _surface_species_for_candidate(row: Any, support_refs: list[dict[str, Any]]) -> tuple[str, ...]:
     support_elements: set[str] = {"O"}
     for ref in support_refs:
@@ -243,6 +254,36 @@ def _is_oxide_ref(ref: dict[str, Any]) -> bool:
 
 def _surface_elements_from_ref(ref: dict[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(el for el in _bulk_ref_elements(ref) if el != "O"))
+
+
+def _structure_element_counts(struct_dict: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for site in struct_dict.get("sites", []):
+        if not isinstance(site, dict):
+            continue
+        species = site.get("species") or []
+        if not species or not isinstance(species[0], dict):
+            continue
+        symbol = str(species[0].get("element") or species[0].get("label") or "").strip()
+        if symbol:
+            counts[symbol] = counts.get(symbol, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _element_model_role(
+    symbol: str,
+    substrate_ref: dict[str, Any],
+    film_ref: dict[str, Any] | None,
+    surface_species: tuple[str, ...],
+) -> str:
+    roles: list[str] = []
+    if symbol in _bulk_ref_elements(substrate_ref):
+        roles.append("substrate bulk")
+    if isinstance(film_ref, dict) and symbol in _bulk_ref_elements(film_ref):
+        roles.append("film/interface bulk")
+    if symbol in surface_species:
+        roles.append("adsorbed surface additive")
+    return " + ".join(roles) if roles else "generated atom"
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1285,15 +1326,14 @@ with tab_discover:
 
                                 def _default_ref_role(ref: dict[str, Any]) -> str:
                                     mid = str(ref.get("material_id", ""))
-                                    formula = str(ref.get("formula_pretty", ""))
                                     if mid == (zn_substrate_id or first_oxide_id):
                                         return "substrate"
                                     if mid == tio2_film_id and mid != (zn_substrate_id or first_oxide_id):
                                         return "film"
                                     if not _is_oxide_ref(ref):
-                                        return "surface additive"
-                                    if any(el in formula for el in ("Fe", "Pt", "Pd", "Cu", "Ni", "Co", "Ru", "Rh", "Ag", "Au")):
-                                        return "surface additive"
+                                        if any(_candidate_has_elemental_component(row, el) for el in _surface_elements_from_ref(ref)):
+                                            return "surface additive"
+                                        return "ignore"
                                     return "ignore"
 
                                 for ref in refs:
@@ -1367,6 +1407,11 @@ with tab_discover:
                                         [substrate_ref] + ([film_ref] if isinstance(film_ref, dict) else []),
                                     )
                                 surface_label = ", ".join(surface_species)
+                                support_elements = set().union(*(_bulk_ref_elements(r) for r in support_refs))
+                                duplicate_surface_elements = [
+                                    el for el in surface_species
+                                    if el in support_elements and el != "O"
+                                ]
                                 dopant_components = [
                                     _ref_label(r)
                                     for r in refs
@@ -1397,6 +1442,46 @@ with tab_discover:
                                     )
                                 if ignored_components:
                                     st.caption("Ignored for this generated structure: " + ", ".join(ignored_components))
+                                if duplicate_surface_elements:
+                                    st.warning(
+                                        "These surface additives are already present in the selected substrate/film: "
+                                        + ", ".join(duplicate_surface_elements)
+                                        + ". Keeping them as surface additives means adding extra adsorbed atoms, "
+                                        "not just using the support composition."
+                                    )
+
+                                role_rows = []
+                                for ref in refs:
+                                    mid = str(ref.get("material_id", ""))
+                                    role = ref_roles.get(mid, "ignore")
+                                    modeled_as = {
+                                        "substrate": "bulk slab support",
+                                        "film": "bulk film/interface slab",
+                                        "surface additive": "adsorbed atom(s) above surface",
+                                        "dopant/vacancy": "tracked only; not inserted yet",
+                                        "ignore": "not included in generated geometry",
+                                    }.get(role, role)
+                                    role_rows.append(
+                                        {
+                                            "component": _ref_label(ref),
+                                            "role": role,
+                                            "modeled as": modeled_as,
+                                        }
+                                    )
+                                for symbol, role in extra_element_roles.items():
+                                    role_rows.append(
+                                        {
+                                            "component": symbol,
+                                            "role": role,
+                                            "modeled as": {
+                                                "surface additive": "adsorbed atom(s) above surface",
+                                                "dopant/vacancy": "tracked only; not inserted yet",
+                                                "ignore": "not included in generated geometry",
+                                            }.get(role, role),
+                                        }
+                                    )
+                                with st.expander("Component role summary", expanded=False):
+                                    st.dataframe(pd.DataFrame(role_rows), use_container_width=True, hide_index=True)
 
                                 with st.expander("Modeling assumptions", expanded=True):
                                     c1, c2, c3 = st.columns(3)
@@ -1570,18 +1655,46 @@ with tab_discover:
                                         )
                                     try:
                                         from services.viz.mp_streamlit import (
-                                            py3dmol_html,
+                                            element_color,
+                                            py3dmol_html_with_legend,
                                             py3dmol_view_from_cif,
                                             structure_dict_to_cif,
                                         )
 
+                                        element_counts = _structure_element_counts(result["structure"])
+                                        legend_items: list[dict[str, Any]] = []
+                                        if element_counts:
+                                            legend_items = [
+                                                {
+                                                    "element": symbol,
+                                                    "atoms": count,
+                                                    "role": _element_model_role(
+                                                        symbol,
+                                                        substrate_ref,
+                                                        film_ref,
+                                                        surface_species,
+                                                    ),
+                                                    "color": element_color(symbol),
+                                                }
+                                                for symbol, count in element_counts.items()
+                                            ]
+                                            st.caption(
+                                                "The bottom-right legend gives species, base-cell counts, and model roles. "
+                                                "The viewer repeats the saved base cell as 2x2x1 only for inspection."
+                                            )
+
                                         cif = structure_dict_to_cif(result["structure"], supercell=(2, 2, 1))
-                                        view = py3dmol_view_from_cif(cif, width=900, height=560)
+                                        view = py3dmol_view_from_cif(
+                                            cif,
+                                            width=900,
+                                            height=560,
+                                            elements=list(element_counts.keys()),
+                                        )
                                         st.caption(
                                             "Viewer shows a 2x2x1 visual supercell with unit-cell edges for clarity; "
                                             "saved files remain the generated base cell."
                                         )
-                                        st.components.v1.html(py3dmol_html(view), height=590)
+                                        st.components.v1.html(py3dmol_html_with_legend(view, legend_items), height=610)
                                     except Exception as exc:  # noqa: BLE001
                                         st.info(f"Could not render the generated structure inline: {exc}")
         rerank_delta_state = st.session_state.get("latest_rerank_delta")
