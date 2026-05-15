@@ -1,9 +1,9 @@
 {
-  "input_csv": "/Users/deveshi/catalyst_gen/dataset/simulation/co2_methanol_sweep.csv",
+  "input_csv": "/Users/deveshi/CatalyticIQ/dataset/simulation/co2_methanol_sweep.csv",
   "target": "simulated_sty_g_h_gcat",
-  "n_rows": 3000,
-  "n_train": 2250,
-  "n_test": 750,
+  "n_rows": 1800,
+  "n_train": 1350,
+  "n_test": 450,
   "features": [
     "temperature_c",
     "pressure_bar",
@@ -24,8 +24,8 @@
     "feed_H2O",
     "feed_N2"
   ],
-  "train_r2": 0.9987719160263244,
-  "test_r2": 0.9945183346799661,
-  "train_mae": 0.0017975486696628553,
-  "test_mae": 0.003776886776283548
+  "train_r2": 0.9989153483001347,
+  "test_r2": 0.9955209235214351,
+  "train_mae": 0.00031136396117970554,
+  "test_mae": 0.0006531392660647074
 }

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RUN = ROOT / "dataset" / "co2_methanol" / "output_0_20260507_173839"
 DEFAULT_CONFIG = ROOT / "config" / "reactions" / "co2_methanol.yaml"
+CONDA_ENV = os.environ.get("CATALYTICIQ_CONDA_ENV", "catalyticiq")
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,7 +147,7 @@ def main() -> None:
         f"- Sweep CSV: {_repo_path(args.sweep_output)}\n"
         f"- Surrogate dir: {_repo_path(args.surrogate_output_dir)}\n\n"
         "Launch dashboard:\n"
-        "conda run --no-capture-output -n catdrx streamlit run app.py "
+        f"conda run --no-capture-output -n {CONDA_ENV} streamlit run app.py "
         "--server.port 8501 --server.address 127.0.0.1\n"
     )
 
