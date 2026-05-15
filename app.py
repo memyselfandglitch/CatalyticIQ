@@ -2359,20 +2359,12 @@ with tab_feedback:
         st.error(f"Feedback store unavailable: {exc}")
 
     if feedback_store is not None:
-        st.info(
-            "Demo loop: import example outcomes -> refresh property-head artifacts -> "
-            "retrain the ActivityHead ranking model. "
-            "Full CVAE fine-tuning is triggered only after enough validated lab rows pass drift checks."
-        )
         feedback_rows = feedback_store.list_experiments(limit=10_000)
         measured_feedback_rows = [r for r in feedback_rows if r.get("measured_sty") is not None]
-        versions_preview = feedback_store.list_model_versions()
-
-        st.markdown("**Closed-loop demo controls**")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Measured feedback rows", len(measured_feedback_rows))
-        c2.metric("Current CVAE run", selected_run_time)
-        c3.metric("Last feedback model", versions_preview[0]["version"] if versions_preview else "not retrained")
+        st.caption(
+            f"**{len(measured_feedback_rows)}** measured lab row(s) logged. "
+            "CVAE run and generation batch are chosen in the sidebar."
+        )
 
         action_left, action_mid, action_right, action_clear = st.columns([1, 1, 1, 1])
         with action_left:
@@ -2422,11 +2414,6 @@ with tab_feedback:
         if "_feedback_cleared_count" in st.session_state:
             _cnt = st.session_state.pop("_feedback_cleared_count")
             st.success(f"Cleared {_cnt} logged experiment row(s) from cache/feedback.duckdb.")
-
-        st.caption(
-            "Logged lab rows live in `cache/feedback.duckdb` (`experiments`). "
-            "Clear logged experiments wipes that table only; CVAE runs and `model_versions` are unchanged."
-        )
 
         if clear_logs_clicked:
             _cleared = feedback_store.clear_experiments()
