@@ -621,11 +621,16 @@ def postprocess(
         df["measured_sty_logged"] = np.nan
         df["logged_at"] = pd.NaT
     df["has_logged_experimental"] = df["measured_sty_logged"].notna()
+    if df["has_logged_experimental"].any():
+        df["model_predicted_sty_g_h_gcat"] = df["predicted_sty_g_h_gcat"]
+        df.loc[df["has_logged_experimental"], "predicted_sty_g_h_gcat"] = df.loc[
+            df["has_logged_experimental"], "measured_sty_logged"
+        ]
     if use_activity_head and "activity_head_sty" in df.columns:
         df = (
             df.sort_values(
-                ["has_logged_experimental", "measured_sty_logged", "activity_head_sty"],
-                ascending=[False, False, False],
+                ["has_logged_experimental", "measured_sty_logged", "predicted_sty_g_h_gcat", "activity_head_sty"],
+                ascending=[False, False, False, False],
                 na_position="last",
             )
             .drop_duplicates(subset=["pseudo_smiles"])
@@ -634,8 +639,8 @@ def postprocess(
     else:
         df = (
             df.sort_values(
-                ["has_logged_experimental", "measured_sty_logged", "raw_score"],
-                ascending=[False, False, False],
+                ["has_logged_experimental", "measured_sty_logged", "predicted_sty_g_h_gcat", "raw_score"],
+                ascending=[False, False, False, False],
                 na_position="last",
             )
             .drop_duplicates(subset=["pseudo_smiles"])
@@ -664,6 +669,9 @@ def postprocess(
     ]
     if use_activity_head and "activity_head_sty" in df.columns:
         cols.insert(4, "activity_head_sty")
+    if "model_predicted_sty_g_h_gcat" in df.columns:
+        insert_at = cols.index("predicted_sty_g_h_gcat") + 1
+        cols.insert(insert_at, "model_predicted_sty_g_h_gcat")
     df = df[cols + ["components"]]
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)

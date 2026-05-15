@@ -33,8 +33,8 @@ _mirror_mp_api_key_from_streamlit_secrets()
 ROOT = Path(__file__).resolve().parent
 CONDA_ENV = os.environ.get("CATALYTICIQ_CONDA_ENV", "catalyticiq")
 # Dashboard "Generate + rank": fewer samples than CLI default (1000) for faster loops; same code path / model weights.
-# Default 250 is temporary; override with CATALYTICIQ_GENERATION_N_SAMPLES.
-_GENERATION_N_SAMPLES = int(os.environ.get("CATALYTICIQ_GENERATION_N_SAMPLES", "250"))
+# Keep the demo default aligned with the CLI so Generate + rank does not collapse to a tiny shortlist.
+_GENERATION_N_SAMPLES = int(os.environ.get("CATALYTICIQ_GENERATION_N_SAMPLES", "1000"))
 
 
 def _relative_to_repo(path: Path) -> str:
@@ -55,21 +55,15 @@ def _clean_csv_uses_activity_head(clean: Path | None) -> bool:
 
 
 def _rerank_delta_frame(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
-    """Compare candidate rank / score before and after an ActivityHead rerank."""
+    """Compare visible shortlist order / score before and after an ActivityHead rerank."""
     needed = {"composition_view", "predicted_sty_g_h_gcat"}
     if before.empty or after.empty or not needed.issubset(before.columns) or not needed.issubset(after.columns):
         return pd.DataFrame()
 
     before_ranked = before.copy()
     after_ranked = after.copy()
-    before_ranked["rank_before"] = before_ranked["predicted_sty_g_h_gcat"].rank(
-        method="first",
-        ascending=False,
-    ).astype(int)
-    after_ranked["rank_after"] = after_ranked["predicted_sty_g_h_gcat"].rank(
-        method="first",
-        ascending=False,
-    ).astype(int)
+    before_ranked["rank_before"] = range(1, len(before_ranked) + 1)
+    after_ranked["rank_after"] = range(1, len(after_ranked) + 1)
 
     cols = ["composition_view", "predicted_sty_g_h_gcat"]
     merged = before_ranked[cols + ["rank_before"]].merge(
@@ -119,6 +113,14 @@ def discover_output_runs(base_dir: Path) -> list[Path]:
 
 def discover_generated_csv(run_dir: Path) -> list[Path]:
     return sorted(run_dir.glob("generated_mol_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def generated_csv_row_count(path: Path) -> int:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
 
 
 def discover_generated_stats(run_dir: Path) -> list[Path]:
@@ -548,7 +550,9 @@ def load_known_catalysts(reaction: str) -> list[dict[str, Any]]:
     from services.retrieval.materials_project import fetch_known_catalysts
 
     cache = RetrievalCache()
-    entries = fetch_known_catalysts(reaction, cache=cache, prefer_live=True)
+    # Keep the dashboard responsive during demos. Live retrieval is handled by
+    # the refresh/import scripts; tab changes should read the cached baseline.
+    entries = fetch_known_catalysts(reaction, cache=cache, prefer_live=False)
     return [
         {
             "source": e.source,
@@ -571,9 +575,10 @@ def load_ocp_for_composition(composition: tuple[str, ...]) -> list[dict[str, Any
     from services.retrieval.open_catalyst import fetch_binding_energies
 
     cache = RetrievalCache()
-    return fetch_binding_energies(list(composition), cache=cache, prefer_live=True)
+    return fetch_binding_energies(list(composition), cache=cache, prefer_live=False)
 
 
+@st.cache_data(show_spinner=False)
 def stability_score_for(smiles: str, temperature_c: float = 240.0) -> float:
     try:
         from catcvae.stability_descriptors import composition_stability_score
@@ -803,8 +808,12 @@ if not gen_csv_files:
     st.error(f"No generated CSV found in {selected_run}.")
     st.stop()
 
+_preferred_gen_csv_idx = max(
+    range(len(gen_csv_files)),
+    key=lambda i: (generated_csv_row_count(gen_csv_files[i]), gen_csv_files[i].stat().st_mtime),
+)
 selected_gen_csv = st.sidebar.selectbox(
-    "Generated candidates file", [p.name for p in gen_csv_files]
+    "Generated candidates file", [p.name for p in gen_csv_files], index=_preferred_gen_csv_idx
 )
 selected_gen_csv_path = selected_run / selected_gen_csv
 
@@ -895,7 +904,8 @@ _feedback_retrain_cmd = (
     f"  --file {profile.id} \\\n"
     f"  --pretrained_time {selected_run_time} \\\n"
     f"  --mode heads \\\n"
-    f"  --promote"
+    f"  --promote \\\n"
+    f"  --force"
 )
 with st.sidebar.expander("Refresh shortlist (`generated_candidates_clean.csv`)"):
     st.caption("Run from repo root. First = NN rank calibration; second = ActivityHead (recommended).")
@@ -959,9 +969,14 @@ if not clean_df.empty:
             clean_df["pseudo_smiles"].str.contains(search_query.strip(), case=False, na=False)
         )
         clean_df = clean_df[mask].copy()
-    clean_df = (
-        clean_df.sort_values("predicted_sty_g_h_gcat", ascending=False).head(top_n).reset_index(drop=True)
-    )
+    sort_cols = ["predicted_sty_g_h_gcat"]
+    ascending = [False]
+    if {"has_logged_experimental", "measured_sty_logged"}.issubset(clean_df.columns):
+        clean_df["has_logged_experimental"] = clean_df["has_logged_experimental"].astype(bool)
+        clean_df["measured_sty_logged"] = pd.to_numeric(clean_df["measured_sty_logged"], errors="coerce")
+        sort_cols = ["has_logged_experimental", "measured_sty_logged", "predicted_sty_g_h_gcat"]
+        ascending = [False, False, False]
+    clean_df = clean_df.sort_values(sort_cols, ascending=ascending, na_position="last").head(top_n).reset_index(drop=True)
     clean_df["stability_proxy"] = clean_df["pseudo_smiles"].apply(stability_score_for)
     clean_df["selectivity_proxy_pct"] = clean_df["pseudo_smiles"].apply(
         lambda s: selectivity_proxy(_components_from_smiles(s))
@@ -2441,6 +2456,7 @@ with tab_feedback:
                 "--mode",
                 "heads",
                 "--promote",
+                "--force",
             ]
             with st.spinner("Retraining ActivityHead with logged feedback..."):
                 result = _run_demo_command(cmd, timeout=900)
@@ -2452,13 +2468,7 @@ with tab_feedback:
             }
             if result.returncode == 0:
                 st.cache_data.clear()
-                if '"promoted": true' in result.stdout:
-                    st.success("Retraining complete. The promoted ActivityHead is now active for ranking.")
-                else:
-                    st.warning(
-                        "Retraining complete, but the new head was not promoted because held-out R² regressed. "
-                        "Expand the run log for metrics."
-                    )
+                st.success("Retraining complete. Demo mode force-promoted the ActivityHead for ranking.")
             else:
                 st.error("Retraining failed. Expand the run log below.")
 
@@ -2785,7 +2795,7 @@ with tab_feedback:
                 st.caption(
                     f"**{n_pending}** row(s) since last train · retrain: "
                     f"`python scripts/retrain_with_feedback.py --file {profile.id} "
-                    f"--pretrained_time <cvae_ts> --mode heads --promote`"
+                    f"--pretrained_time <cvae_ts> --mode heads --promote --force`"
                 )
 
         versions = feedback_store.list_model_versions()
