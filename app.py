@@ -988,8 +988,8 @@ hyper_row = (
 # Tab layout
 # =========================================================================
 
-tab_discover, tab_pathway, tab_compare, tab_kb, tab_validation, tab_feedback = st.tabs(
-    ["Discover", "Pathway", "Compare", "Knowledge Base", "Validation", "Feedback"]
+tab_discover, tab_structure, tab_pathway, tab_compare, tab_kb, tab_validation, tab_feedback = st.tabs(
+    ["Discover", "Generate 3D Catalyst", "Pathway", "Compare", "Knowledge Base", "Validation", "Feedback"]
 )
 
 
@@ -1137,9 +1137,7 @@ with tab_discover:
             "For the demo, focus on predicted STY, gate tier/score, simulated STY, and simulation confidence. "
             "Selectivity and stability are descriptor priors until real lab labels are logged."
         )
-        _show_structure_builder = not clean_df.empty and (
-            "components" in clean_df.columns or "mp_structure_refs" in clean_df.columns
-        )
+        _show_structure_builder = False
         if _show_structure_builder:
             from services.retrieval.mp_bulk_structures import (
                 mp_crystal_structure_page_url,
@@ -1673,6 +1671,412 @@ with tab_discover:
             st.dataframe(hyper_row, use_container_width=True)
 
 
+# ------------------------------------------------------------- GENERATE 3D CATALYST
+with tab_structure:
+    st.subheader("Generate 3D Catalyst")
+    st.caption(
+        "Build an approximate full catalyst heterostructure from explicit modeling assumptions. Materials Project "
+        "supplies bulk inputs; the visualized object is the generated slab/interface plus adsorbed surface species, "
+        "not a direct Materials Project crystal page."
+    )
+
+    if clean_df.empty or ("components" not in clean_df.columns and "mp_structure_refs" not in clean_df.columns):
+        st.info("No ranked catalyst candidates are available for 3D generation in the selected run.")
+    else:
+        from services.retrieval.mp_bulk_structures import (
+            mp_crystal_structure_page_url,
+            mp_refs_from_clean_csv_row,
+        )
+        from services.structure_builder import parse_miller_index
+
+        mp_row_count = min(len(clean_df), 50)
+        candidate_options = list(range(mp_row_count))
+        candidate_idx = st.selectbox(
+            "Catalyst candidate",
+            candidate_options,
+            index=0 if candidate_options else None,
+            placeholder="Choose a shortlist candidate...",
+            format_func=lambda j: str(clean_df.iloc[j].get("composition_view", f"row {j + 1}")),
+            key="structure_page_candidate_pick",
+        )
+        if candidate_idx is None:
+            st.info("Select a candidate to configure and build its 3D catalyst model.")
+        else:
+            row = clean_df.iloc[candidate_idx]
+            candidate_label = str(row.get("composition_view", f"candidate_{candidate_idx + 1}"))
+
+            def _ref_label(ref: dict[str, Any]) -> str:
+                return (
+                    f"{ref.get('formula_pretty', ref.get('material_id', 'MP phase'))} "
+                    f"({ref.get('material_id', 'unknown')})"
+                )
+
+            with st.spinner("Resolving Materials Project bulk inputs for the selected candidate..."):
+                refs = mp_refs_from_clean_csv_row(row)
+
+            oxide_refs = [r for r in refs if _is_oxide_ref(r)]
+            support_oxide_refs = [r for r in oxide_refs if _surface_elements_from_ref(r)]
+            if not support_oxide_refs:
+                st.info("No usable oxide/support bulk phases were resolved for this candidate.")
+            else:
+                st.markdown("**1. Component roles**")
+                st.caption(
+                    "For candidates with three or more ingredients, choose one bulk support substrate, optionally "
+                    "one film/interface bulk, and place the remaining active species above the surface. "
+                    "Dopants/vacancies are tracked as assumptions but are not inserted into the lattice yet."
+                )
+                role_options = ["substrate", "film", "surface additive", "dopant/vacancy", "ignore"]
+                ref_roles: dict[str, str] = {}
+                zn_substrate_id = next(
+                    (
+                        str(r.get("material_id", ""))
+                        for r in support_oxide_refs
+                        if "ZnO" in str(r.get("formula_pretty", ""))
+                    ),
+                    "",
+                )
+                first_oxide_id = str(support_oxide_refs[0].get("material_id", ""))
+                tio2_film_id = next(
+                    (
+                        str(r.get("material_id", ""))
+                        for r in support_oxide_refs
+                        if "TiO2" in str(r.get("formula_pretty", ""))
+                    ),
+                    "",
+                )
+
+                def _default_ref_role(ref: dict[str, Any]) -> str:
+                    mid = str(ref.get("material_id", ""))
+                    if _is_oxide_ref(ref) and not _surface_elements_from_ref(ref):
+                        return "ignore"
+                    if mid == (zn_substrate_id or first_oxide_id):
+                        return "substrate"
+                    if mid == tio2_film_id and mid != (zn_substrate_id or first_oxide_id):
+                        return "film"
+                    if not _is_oxide_ref(ref):
+                        if any(_candidate_has_elemental_component(row, el) for el in _surface_elements_from_ref(ref)):
+                            return "surface additive"
+                        return "ignore"
+                    return "ignore"
+
+                for ref in refs:
+                    mid = str(ref.get("material_id", "unknown"))
+                    default_role = _default_ref_role(ref)
+                    ref_roles[mid] = st.selectbox(
+                        _ref_label(ref),
+                        role_options,
+                        index=role_options.index(default_role),
+                        key=f"structure_page_role_ref_{candidate_idx}_{mid}",
+                    )
+
+                covered_elements: set[str] = set()
+                for ref in refs:
+                    if ref_roles.get(str(ref.get("material_id", ""))) != "ignore":
+                        covered_elements.update(_bulk_ref_elements(ref))
+                extra_element_roles: dict[str, str] = {}
+                extra_elements = [
+                    el for el in _candidate_elements(row)
+                    if el != "O" and el not in covered_elements
+                ]
+                if extra_elements:
+                    st.caption("Candidate-only components")
+                    extra_cols = st.columns(min(3, len(extra_elements)))
+                    for i, symbol in enumerate(extra_elements):
+                        with extra_cols[i % len(extra_cols)]:
+                            extra_element_roles[symbol] = st.selectbox(
+                                symbol,
+                                role_options[2:],
+                                index=0,
+                                key=f"structure_page_role_extra_{candidate_idx}_{symbol}",
+                            )
+
+                substrate_refs = [
+                    r for r in refs
+                    if (
+                        ref_roles.get(str(r.get("material_id", ""))) == "substrate"
+                        and _is_oxide_ref(r)
+                        and _surface_elements_from_ref(r)
+                    )
+                ]
+                film_refs = [
+                    r for r in refs
+                    if (
+                        ref_roles.get(str(r.get("material_id", ""))) == "film"
+                        and _is_oxide_ref(r)
+                        and _surface_elements_from_ref(r)
+                    )
+                ]
+                can_build_structure = bool(substrate_refs)
+                if not can_build_structure:
+                    st.warning("Select one oxide bulk as the substrate before building.")
+                    substrate_ref = support_oxide_refs[0]
+                elif len(substrate_refs) > 1:
+                    st.warning("Multiple substrate bulks selected; using the first one.")
+                    substrate_ref = substrate_refs[0]
+                else:
+                    substrate_ref = substrate_refs[0]
+                film_ref = next(
+                    (
+                        r for r in film_refs
+                        if str(r.get("material_id", "")) != str(substrate_ref.get("material_id", ""))
+                    ),
+                    None,
+                )
+                support_refs = [substrate_ref] + ([film_ref] if isinstance(film_ref, dict) else [])
+
+                surface_species_list: list[str] = []
+                for ref in refs:
+                    if ref_roles.get(str(ref.get("material_id", ""))) == "surface additive":
+                        surface_species_list.extend(_surface_elements_from_ref(ref))
+                for symbol, role in extra_element_roles.items():
+                    if role == "surface additive":
+                        surface_species_list.append(symbol)
+                surface_species = tuple(dict.fromkeys(el for el in surface_species_list if el and el != "O"))
+                if not surface_species:
+                    surface_species = _surface_species_for_candidate(row, support_refs)
+                surface_label = ", ".join(surface_species) if surface_species else "none"
+
+                dopant_components = [
+                    _ref_label(r)
+                    for r in refs
+                    if ref_roles.get(str(r.get("material_id", ""))) == "dopant/vacancy"
+                ] + [
+                    symbol for symbol, role in extra_element_roles.items()
+                    if role == "dopant/vacancy"
+                ]
+                ignored_components = [
+                    _ref_label(r)
+                    for r in refs
+                    if ref_roles.get(str(r.get("material_id", ""))) == "ignore"
+                ] + [
+                    symbol for symbol, role in extra_element_roles.items()
+                    if role == "ignore"
+                ]
+                duplicate_surface_elements = [
+                    el for el in surface_species
+                    if el in set().union(*(_bulk_ref_elements(r) for r in support_refs)) and el != "O"
+                ]
+
+                st.info(
+                    "Approximation indicator: generated slab/interface model. "
+                    f"Substrate = {_ref_label(substrate_ref)}; "
+                    f"film = {_ref_label(film_ref) if isinstance(film_ref, dict) else 'none'}; "
+                    f"surface additives = {surface_label}."
+                )
+                if dopant_components:
+                    st.warning(
+                        "Dopant/vacancy roles are recorded as assumptions but are not atomistically inserted yet: "
+                        + ", ".join(dopant_components)
+                    )
+                if ignored_components:
+                    st.caption("Ignored for this generated structure: " + ", ".join(ignored_components))
+                if duplicate_surface_elements:
+                    st.warning(
+                        "These surface additives are already present in the selected substrate/film: "
+                        + ", ".join(duplicate_surface_elements)
+                        + ". Keeping them as surface additives means adding extra adsorbed atoms."
+                    )
+
+                role_rows = []
+                for ref in refs:
+                    role = ref_roles.get(str(ref.get("material_id", "")), "ignore")
+                    role_rows.append(
+                        {
+                            "component": _ref_label(ref),
+                            "role": role,
+                            "modeled as": {
+                                "substrate": "bulk slab support",
+                                "film": "bulk film/interface slab",
+                                "surface additive": "adsorbed atom(s) above surface",
+                                "dopant/vacancy": "tracked only; not inserted yet",
+                                "ignore": "not included in generated geometry",
+                            }.get(role, role),
+                        }
+                    )
+                for symbol, role in extra_element_roles.items():
+                    role_rows.append(
+                        {
+                            "component": symbol,
+                            "role": role,
+                            "modeled as": {
+                                "surface additive": "adsorbed atom(s) above surface",
+                                "dopant/vacancy": "tracked only; not inserted yet",
+                                "ignore": "not included in generated geometry",
+                            }.get(role, role),
+                        }
+                    )
+                with st.expander("Component role summary", expanded=False):
+                    st.dataframe(pd.DataFrame(role_rows), use_container_width=True, hide_index=True)
+
+                st.markdown("**2. Modeling assumptions**")
+                a1, a2, a3 = st.columns(3)
+                with a1:
+                    substrate_miller_raw = st.text_input(
+                        "Substrate Miller index",
+                        value="0 0 1",
+                        key=f"structure_page_substrate_miller_{candidate_idx}",
+                    )
+                    substrate_layers = st.number_input(
+                        "Substrate thickness (layers)",
+                        min_value=1.0,
+                        max_value=12.0,
+                        value=3.0,
+                        step=1.0,
+                        key=f"structure_page_substrate_layers_{candidate_idx}",
+                    )
+                with a2:
+                    film_miller_raw = st.text_input(
+                        "Film Miller index",
+                        value="1 0 1",
+                        disabled=film_ref is None,
+                        key=f"structure_page_film_miller_{candidate_idx}",
+                    )
+                    film_layers = st.number_input(
+                        "Film thickness (layers)",
+                        min_value=1.0,
+                        max_value=12.0,
+                        value=4.0,
+                        step=1.0,
+                        disabled=film_ref is None,
+                        key=f"structure_page_film_layers_{candidate_idx}",
+                    )
+                with a3:
+                    active_atoms = st.number_input(
+                        f"Atoms per surface species ({surface_label})",
+                        min_value=1,
+                        max_value=12,
+                        value=1,
+                        step=1,
+                        key=f"structure_page_active_atoms_{candidate_idx}",
+                    )
+                    metal_height = st.number_input(
+                        "Surface species height (A)",
+                        min_value=1.0,
+                        max_value=5.0,
+                        value=2.1,
+                        step=0.1,
+                        key=f"structure_page_metal_height_{candidate_idx}",
+                    )
+                g1, g2 = st.columns(2)
+                with g1:
+                    interface_gap = st.number_input(
+                        "Interface gap (A)",
+                        min_value=1.0,
+                        max_value=6.0,
+                        value=2.5,
+                        step=0.1,
+                        disabled=film_ref is None,
+                        key=f"structure_page_interface_gap_{candidate_idx}",
+                    )
+                with g2:
+                    vacuum = st.number_input(
+                        "Vacuum above surface (A)",
+                        min_value=8.0,
+                        max_value=30.0,
+                        value=15.0,
+                        step=1.0,
+                        key=f"structure_page_vacuum_{candidate_idx}",
+                    )
+
+                for ref in support_refs:
+                    mid = str(ref.get("material_id", "")).strip()
+                    fp = str(ref.get("formula_pretty", mid))
+                    st.link_button(
+                        f"MP bulk input: {fp} ({mid})",
+                        str(ref.get("mp_crystal_url") or mp_crystal_structure_page_url(mid, fp)),
+                    )
+
+                build_clicked = st.button(
+                    "Build full catalyst structure",
+                    type="primary",
+                    disabled=not can_build_structure,
+                    key=f"structure_page_build_{candidate_idx}",
+                )
+                if build_clicked:
+                    try:
+                        with st.spinner("Fetching MP bulks and building slab/interface catalyst structure..."):
+                            result = _dash_build_catalyst_structure(
+                                candidate_label=candidate_label,
+                                active_metal=_candidate_active_metal(row),
+                                surface_species=surface_species,
+                                active_atoms=int(active_atoms),
+                                substrate_material_id=str(substrate_ref.get("material_id", "")),
+                                substrate_label=str(substrate_ref.get("formula_pretty", "")),
+                                substrate_miller=parse_miller_index(substrate_miller_raw, (0, 0, 1)),
+                                substrate_thickness=float(substrate_layers),
+                                film_material_id=str(film_ref.get("material_id", "")) if isinstance(film_ref, dict) else None,
+                                film_label=str(film_ref.get("formula_pretty", "")) if isinstance(film_ref, dict) else None,
+                                film_miller=parse_miller_index(film_miller_raw, (1, 0, 1)),
+                                film_thickness=float(film_layers),
+                                interface_gap_a=float(interface_gap),
+                                vacuum_a=float(vacuum),
+                                output_dir=str(selected_run / "generated_structures"),
+                            )
+                        st.session_state[f"structure_page_result_{candidate_idx}"] = result
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Could not build catalyst structure: {exc}")
+
+                result = st.session_state.get(f"structure_page_result_{candidate_idx}")
+                if isinstance(result, dict):
+                    validation = result.get("validation", {})
+                    st.markdown("**3. Generated structure**")
+                    v1, v2, v3, v4 = st.columns(4)
+                    v1.metric("Atoms", validation.get("n_atoms", "N/A"))
+                    v2.metric("Formula", validation.get("formula", "N/A"))
+                    min_dist = validation.get("min_interatomic_distance_a")
+                    v3.metric("Min distance", f"{min_dist:.2f} A" if isinstance(min_dist, (int, float)) else "N/A")
+                    surface_counts = validation.get("surface_atom_counts", {})
+                    v4.metric(
+                        "Surface atoms",
+                        ", ".join(f"{k}:{v}" for k, v in surface_counts.items()) if isinstance(surface_counts, dict) else "N/A",
+                    )
+                    build_meta = result.get("build", {})
+                    if build_meta.get("mode") == "stacked_slab_fallback":
+                        st.warning(
+                            "No coherent low-strain interface match was found, so this view uses an approximate "
+                            "stacked-slab fallback. Treat it as a visual starting geometry, not a DFT-ready relaxed interface."
+                        )
+                    for warning in validation.get("warnings") or []:
+                        st.warning(str(warning))
+                    files = result.get("files", {})
+                    if files:
+                        st.caption(
+                            "Saved generated catalyst files: "
+                            + ", ".join(f"`{_relative_to_repo(Path(p))}`" for p in files.values())
+                        )
+                    try:
+                        from services.viz.mp_streamlit import (
+                            element_color,
+                            py3dmol_html_with_legend,
+                            py3dmol_view_from_cif,
+                            structure_dict_to_cif,
+                        )
+
+                        element_counts = _structure_element_counts(result["structure"])
+                        legend_items = [
+                            {
+                                "element": symbol,
+                                "atoms": count,
+                                "role": _element_model_role(symbol, substrate_ref, film_ref, surface_species),
+                                "color": element_color(symbol),
+                            }
+                            for symbol, count in element_counts.items()
+                        ]
+                        cif = structure_dict_to_cif(result["structure"], supercell=(2, 2, 1))
+                        view = py3dmol_view_from_cif(
+                            cif,
+                            width=900,
+                            height=560,
+                            elements=list(element_counts.keys()),
+                        )
+                        st.caption(
+                            "Viewer shows a 2x2x1 visual supercell with unit-cell edges; saved files remain the base cell."
+                        )
+                        st.components.v1.html(py3dmol_html_with_legend(view, legend_items), height=610)
+                    except Exception as exc:  # noqa: BLE001
+                        st.info(f"Could not render the generated structure inline: {exc}")
+
+
 # ------------------------------------------------------------- PATHWAY
 with tab_pathway:
     st.subheader("Reaction Pathway (free energy)")
@@ -1980,8 +2384,8 @@ with tab_feedback:
                 help=(
                     "Runs scripts/retrain_with_feedback.py --mode heads --promote for the CVAE run selected in the "
                     "sidebar. Retrains ActivityHead using cached literature embeddings (embeddings.npz) plus measured "
-                    "STY rows from the feedback store. For the demo path, --promote always activates the newly "
-                    "retrained head (even if held-out literature R² regresses). Does not delete logged experiments."
+                    "STY rows from the feedback store. Promotion is skipped if held-out literature R² regresses. "
+                    "Does not delete logged experiments."
                 ),
             )
         with action_mid:
@@ -2061,7 +2465,13 @@ with tab_feedback:
             }
             if result.returncode == 0:
                 st.cache_data.clear()
-                st.success("Retraining complete. The promoted ActivityHead is now active for ranking.")
+                if '"promoted": true' in result.stdout:
+                    st.success("Retraining complete. The promoted ActivityHead is now active for ranking.")
+                else:
+                    st.warning(
+                        "Retraining complete, but the new head was not promoted because held-out R² regressed. "
+                        "Expand the run log for metrics."
+                    )
             else:
                 st.error("Retraining failed. Expand the run log below.")
 

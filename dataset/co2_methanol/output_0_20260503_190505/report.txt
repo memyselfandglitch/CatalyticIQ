@@ -1,8 +1,0 @@
-epoch: 0	t_loss: 22.47861	v_loss: 51.40156	opt_loss: 51.40156	valid: 100.00000	diver: 60.00000
-epoch: 1	t_loss: 5.99633	v_loss: 5.80530	opt_loss: 5.80530	valid: 100.00000	diver: 70.00000
-epoch: 2	t_loss: 5.44325	v_loss: 5.23500	opt_loss: 5.23500	valid: 100.00000	diver: 70.00000
-epoch: 3	t_loss: 4.96954	v_loss: 4.87319	opt_loss: 4.87319	valid: 100.00000	diver: 70.00000
-epoch: 4	t_loss: 4.65046	v_loss: 4.70857	opt_loss: 4.70857	valid: 100.00000	diver: 70.00000
-epoch: 5	t_loss: 4.36019	v_loss: 4.52266	opt_loss: 4.52266	valid: 100.00000	diver: 50.00000
-epoch: 6	t_loss: 4.16750	v_loss: 4.20881	opt_loss: 4.20881	valid: 100.00000	diver: 70.00000
-epoch: 7	t_loss: 4.02501	v_loss: 4.24523	opt_loss: 4.20881	valid: 100.00000	diver: 80.00000

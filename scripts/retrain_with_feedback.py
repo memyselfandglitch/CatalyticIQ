@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/private/tmp")
 
 import numpy as np
 import torch
@@ -340,7 +343,7 @@ def main() -> None:
             )
         )
         versioned.append(version_id)
-        should_promote = bool(args.promote)
+        should_promote = bool(args.promote) and (result["delta_r2"] >= 0.0 or bool(args.force))
         if should_promote:
             canonical = head_path
             backup = canonical.with_suffix(canonical.suffix + ".bak")
@@ -349,6 +352,11 @@ def main() -> None:
             result["promoted"] = True
         else:
             result["promoted"] = False
+            if args.promote and result["delta_r2"] < 0.0 and not args.force:
+                result["promotion_skipped_reason"] = (
+                    f"held-out R2 regressed by {result['delta_r2']:.6f}; "
+                    "pass --force to promote anyway"
+                )
         print(
             json.dumps(
                 {
